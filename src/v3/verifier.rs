@@ -159,8 +159,10 @@ fn verify_rep(
         lo, hi, set_root, num_members, depth, context, circuit_hash, salt, rep_index,
     );
     tr.absorb_hash(b"h1", &rep.commitment_root);
-    let gamma = tr.sample_frs(V3_TR_TAG_GAMMA, 0, eta * num_q);
-    if gamma.len() != eta * num_q {
+    // H1: Gamma covers Q (witness+hints) only; Pu masks added with coeff 1.
+    let num_q_paper = n_w + rho * n_hints;
+    let gamma = tr.sample_frs(V3_TR_TAG_GAMMA, 0, eta * num_q_paper);
+    if gamma.len() != eta * num_q_paper {
         return Err(fail("v3 challenge length mismatch"));
     }
     tr.absorb_hash(b"h1p", &rep.decs_hash);
@@ -214,21 +216,20 @@ fn verify_rep(
         }
         opened_shares.push(o.shares.clone());
     }
-    // Q-column layout: witness packs, mask packs, per-batch hints.
-
-    // Helper: share value of Q column q at (opened position k).
+    // Q-column layout: witness packs then per-batch hints; eta Pu mask packs
+    // live at `n_w..n_w+eta` in the committed leaf and are added with coeff 1.
+    // Helper: share value of committed column q at (opened position k).
     let q_at = |q: usize, k: usize| -> Fr { opened_shares[k][q] };
-    // X-shift per Q column (word-rule; mirrors the prover).
-    let mut q_shift: Vec<usize> = Vec::with_capacity(num_q);
+    // Q-index -> committed column (skip Pu masks); X-shift per Q column.
+    let q_idx: Vec<usize> = (0..n_w).chain((n_w + eta)..num_q).collect();
+    debug_assert_eq!(q_idx.len(), num_q_paper);
+    let mut q_shift_q: Vec<usize> = Vec::with_capacity(num_q_paper);
     for _ in 0..n_w {
-        q_shift.push(d_beta - (s + ell - 1));
-    }
-    for _ in 0..eta {
-        q_shift.push(0);
+        q_shift_q.push(d_beta - (s + ell - 1));
     }
     for _ in 0..rho {
         for d in pi_v.hint_degrees(d_beta).iter().chain(pi_vp.hint_degrees(d_beta).iter()) {
-            q_shift.push(d_beta - d);
+            q_shift_q.push(d_beta - d);
         }
     }
 
@@ -362,14 +363,16 @@ fn verify_rep(
         for pos in 0..ell {
             let e = party_point(s, opened_idx[pos] as usize);
             pts.push(e);
-            let mut acc = Fr::zero();
-            for q in 0..num_q {
-                let qv = if q_shift[q] == 0 {
-                    q_at(q, pos)
+            // Pu mask share for this DECS row, coeff 1, no shift.
+            let mut acc = q_at(n_w + k, pos);
+            for (qi, qs) in q_idx.iter().enumerate() {
+                let shift = q_shift_q[qi];
+                let qv = if shift == 0 {
+                    q_at(*qs, pos)
                 } else {
-                    q_at(q, pos) * e.pow([q_shift[q] as u64])
+                    q_at(*qs, pos) * e.pow([shift as u64])
                 };
-                acc += gamma[k * num_q + q] * qv;
+                acc += gamma[k * num_q_paper + qi] * qv;
             }
             vals.push(acc);
         }

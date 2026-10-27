@@ -188,31 +188,46 @@ fn prove_rep(
     let h1 = merkle_root(&leaves)?;
 
     // --- 2-3. Γ challenge, Pξ evaluation, h1'. ---
-    let num_q = q_shares.len();
+    // H1 (paper Eq.15): `Q = witness+hints`, `Pu = eta masks` with coeff 1.
+    // Leaves still commit `[witness, masks, hints]` in that order, but Gamma
+    // only covers Q; masks are added unweighted for hiding (was Gamma-weighted).
+    let num_q_paper = n_w + rho * (pi_v.num_hints + pi_vp.num_hints);
+    debug_assert_eq!(
+        q_shares.len(),
+        n_w + eta + rho * (pi_v.num_hints + pi_vp.num_hints)
+    );
+    // Q-column -> q_shares index (skip the eta Pu mask columns).
+    let q_idx: Vec<usize> = (0..n_w)
+        .chain((n_w + eta)..q_shares.len())
+        .collect();
+    debug_assert_eq!(q_idx.len(), num_q_paper);
     let mut tr = TranscriptV3::new(
         params.num_parties, params.privacy_threshold, params.packing_width,
         params.decs_reps, params.mpc_reps, params.pok_reps,
         lo, hi, set_root, num_members, depth, context, circuit_hash, salt, rep_index,
     );
     tr.absorb_hash(b"h1", &h1);
-    let gamma = tr.sample_frs(V3_TR_TAG_GAMMA, 0, eta * num_q);
-    // Pξ_k(e_i) for the first dβ+1 parties; interpolate to coefficients.
+    let gamma = tr.sample_frs(V3_TR_TAG_GAMMA, 0, eta * num_q_paper);
+    // Pξ_k(e_i) = Pu_k(e_i) + Σ_q Γ_{k,q}·Q̃_q(e_i) for the first dβ+1
+    // parties; interpolate to coefficients.
     let canon_d: Vec<usize> = (0..d_beta + 1).collect();
     let mut pxi_coeffs: Vec<Vec<Fr>> = Vec::with_capacity(eta);
     for k in 0..eta {
+        let pu_col = &q_shares[n_w + k];
         let evals: Vec<Fr> = canon_d
             .iter()
             .map(|i| {
                 let e = party_point(s, *i);
-                let mut acc = Fr::zero();
-                for (q, col) in q_shares.iter().enumerate() {
-                    let shift = q_shift[q];
+                // Independent mask, coeff 1, no shift (deg == dβ).
+                let mut acc = pu_col[*i];
+                for (qi, qs) in q_idx.iter().enumerate() {
+                    let shift = q_shift[*qs];
                     let qv = if shift == 0 {
-                        col[*i]
+                        q_shares[*qs][*i]
                     } else {
-                        col[*i] * e.pow([shift as u64])
+                        q_shares[*qs][*i] * e.pow([shift as u64])
                     };
-                    acc += gamma[k * num_q + q] * qv;
+                    acc += gamma[k * num_q_paper + qi] * qv;
                 }
                 acc
             })
@@ -312,20 +327,21 @@ fn prove_rep(
         s_alpha.push(s_set.iter().map(|i| eval_poly(&pa, party_point(s, *i))).collect());
         s_alpha_p.push(sp_set.iter().map(|i| eval_poly(&pap, party_point(s, *i))).collect());
     }
-    // DECS responses Pξ(e_i), i in Sξ.
+    // DECS responses Pξ(e_i) = Pu_k(e_i) + Σ_q Γ·Q̃_q(e_i), i in Sξ.
     let mut decs_resp: Vec<Vec<Fr>> = Vec::with_capacity(eta);
     for k in 0..eta {
+        let pu_col = &q_shares[n_w + k];
         let mut row = Vec::with_capacity(sx_set.len());
         for i in &sx_set {
             let e = party_point(s, *i);
-            let mut acc = Fr::zero();
-            for (q, col) in q_shares.iter().enumerate() {
-                let qv = if q_shift[q] == 0 {
-                    col[*i]
+            let mut acc = pu_col[*i];
+            for (qi, qs) in q_idx.iter().enumerate() {
+                let qv = if q_shift[*qs] == 0 {
+                    q_shares[*qs][*i]
                 } else {
-                    col[*i] * e.pow([q_shift[q] as u64])
+                    q_shares[*qs][*i] * e.pow([q_shift[*qs] as u64])
                 };
-                acc += gamma[k * num_q + q] * qv;
+                acc += gamma[k * num_q_paper + qi] * qv;
             }
             row.push(acc);
         }
