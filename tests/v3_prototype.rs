@@ -288,3 +288,32 @@ fn tampered_broadcast_shares_reject() {
         );
     }
 }
+
+#[test]
+fn tampered_delta_u1_rejects() {
+    // C1 regression: delta is bound in hDelta before batching, so flipping
+    // it must fail verification (previously attacker could pick delta* after
+    // seeing gamma').
+    let tree = small_tree();
+    let params = V3Params::fast_insecure_test();
+    let proof_tx = tree.prove_membership(1).unwrap();
+    let context = [7u8; 32];
+    let proof = prove_combined_v3(
+        10, 40, tree.root(), tree.num_members(), tree.depth(), 20, &proof_tx, context, &params,
+        &mut rng(),
+    )
+    .unwrap();
+    let statement = range_set_mpcith::v2::predicate::StatementV2::Combined {
+        range: range_set_mpcith::v2::predicate::RangeStatementV2::new(10, 40).unwrap(),
+        membership: range_set_mpcith::v2::predicate::MembershipStatementV2::new(
+            tree.root(),
+            tree.num_members(),
+            tree.depth(),
+        )
+        .unwrap(),
+    };
+    verify_combined_v3(&proof, &statement, context, &params).unwrap();
+    let mut bad = proof.clone();
+    bad.reps[0].delta_u1[0] += Fr::from(1u64);
+    assert!(verify_combined_v3(&bad, &statement, context, &params).is_err());
+}

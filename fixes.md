@@ -12,10 +12,10 @@ Order: highest severity first, minimal diffs, no over-engineering.
 Each step must keep `cargo test --offline` green.
 
 ## 0. Protocol bump (done once, with C1)
-- `src/v3/suite.rs`: `VERSION 2 -> 3`.
+- `src/v3/suite.rs`: `VERSION 2 -> 4` (3 is `V2_PROOF_VERSION`).
 - `src/v3/transcript.rs`: `V3_TR_DOMAIN_INIT .../v2 -> .../v3`,
-  add `V3_HASH_TAG_DELTA`.
-- `src/v3/proof.rs` tests: expect 3, reject 1 and 2.
+  add `V3_HASH_TAG_DELTA`, bind full suite (M1).
+- `src/v3/proof.rs` tests: expect 4, reject 1/2/3.
 - Reason: C1/H1/M1 all change challenges; single bump avoids
   cross-version replay.
 
