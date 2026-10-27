@@ -51,12 +51,12 @@ is a single sample (no warm-up), so read the ranges, not a single number.
 
 | Set members | Merkle depth | Prove sweep 1 (ms) | Prove sweep 2 (ms) | Prove sweep 3 (ms) | Verify range (ms, 2 checks x 3 sweeps) | Proof bytes | Codec round-trip |
 |---:|---:|---:|---:|---:|---|---|---|
-| 4 | 2 | 1,347.4 | 1,373.1 | 1,318.7 | 240–275 | 180,474 | Pass |
-| 8 | 3 | 1,395.2 | 1,382.5 | 1,322.9 | 255–291 | 191,994 | Pass |
-| 16 | 4 | 1,420.1 | 1,410.8 | 1,414.1 | 273–292 | 203,514 | Pass |
-| 32 | 5 | 1,501.5 | 1,512.7 | 1,510.6 | 297–318 | 215,034 | Pass |
+| 4 | 2 | 1,420.0 | 1,339.3 | 1,277.1 | 241–283 | 180,474 | Pass |
+| 8 | 3 | 1,416.4 | 1,362.3 | 1,304.8 | 258–284 | 191,994 | Pass |
+| 16 | 4 | 1,484.9 | 1,374.5 | 1,367.0 | 280–289 | 203,514 | Pass |
+| 32 | 5 | 1,528.1 | 1,537.2 | 1,501.7 | 300–318 | 215,034 | Pass |
 
-Honest summary: proving takes **~1.3–1.4 s** for 4–16 members and
+Honest summary: proving takes **~1.3–1.5 s** for 4–16 members and
 **~1.5 s** for 32 members on this machine; verification takes
 **~0.24–0.32 s**. Increasing the set from 4 to 32 members adds three
 Merkle levels and 34,560 proof bytes
@@ -99,18 +99,18 @@ variation. Full test suite at this commit: `105 lib + 2 p11 + 9 prototype
 - Command completed three times on 2026-10-27 (post-P11.6); all twelve
   generated proofs verified twice and passed a serialization round-trip.
   Raw rows:
-  `4,2,1347.4,180474,268.3,259.6,ok`,
-  `8,3,1395.2,191994,291.1,264.3,ok`,
-  `16,4,1420.1,203514,287.9,279.2,ok`,
-  `32,5,1501.5,215034,304.3,300.0,ok` /
-  `4,2,1373.1,180474,274.6,264.8,ok`,
-  `8,3,1382.5,191994,268.6,260.9,ok`,
-  `16,4,1410.8,203514,288.8,276.0,ok`,
-  `32,5,1512.7,215034,306.7,312.6,ok` /
-  `4,2,1318.7,180474,255.0,258.6,ok`,
-  `8,3,1322.9,191994,270.9,264.2,ok`,
-  `16,4,1414.1,203514,282.4,283.4,ok`,
-  `32,5,1510.6,215034,317.7,311.8,ok`.
+  `4,2,1420.0,180474,276.8,282.5,ok`,
+  `8,3,1416.4,191994,266.4,283.6,ok`,
+  `16,4,1484.9,203514,281.4,289.4,ok`,
+  `32,5,1528.1,215034,317.6,301.9,ok` /
+  `4,2,1339.3,180474,262.1,260.9,ok`,
+  `8,3,1362.3,191994,266.5,259.9,ok`,
+  `16,4,1374.5,203514,286.4,280.0,ok`,
+  `32,5,1537.2,215034,299.5,300.7,ok` /
+  `4,2,1277.1,180474,257.7,241.4,ok`,
+  `8,3,1304.8,191994,263.7,257.5,ok`,
+  `16,4,1367.0,203514,281.3,279.8,ok`,
+  `32,5,1501.7,215034,311.1,305.1,ok`.
 
 ## Prior optimization comparison
 
