@@ -129,16 +129,29 @@ pub fn verify_path(
     }
     let mut cur = *leaf;
     let mut idx = index;
+    // L2: track width to enforce odd-duplication (`sib==cur` when lonely)
+    // and side parity both ways. Honest paths from `merkle_path` pass.
+    let mut width = num_leaves;
     for step in path {
-        cur = if step.sibling_is_left {
+        if step.sibling_is_left {
             if idx % 2 == 0 {
                 return Ok(false);
             }
+        } else {
+            if idx % 2 == 1 {
+                return Ok(false);
+            }
+            if idx + 1 >= width && step.sibling != cur {
+                return Ok(false);
+            }
+        }
+        cur = if step.sibling_is_left {
             node_commit(&step.sibling, &cur)
         } else {
             node_commit(&cur, &step.sibling)
         };
         idx /= 2;
+        width = width.div_ceil(2);
     }
     Ok(cur == *root)
 }
@@ -199,6 +212,25 @@ mod tests {
         assert!(!verify_path(&leaves[3], 3, &path, &bad_root, 8).unwrap());
         // Truncated path.
         assert!(!verify_path(&leaves[3], 3, &path[..path.len() - 1], &root, 8).unwrap());
+    }
+
+    #[test]
+    fn lonely_duplication_sibling_must_equal_cur() {
+        // n=3: index 2 is lonely at level 0, honest sibling == leaf.
+        let leaves = test_leaves(3);
+        let root = merkle_root(&leaves).unwrap();
+        let path = merkle_path(&leaves, 2).unwrap();
+        assert_eq!(path[0].sibling, leaves[2]);
+        assert!(!path[0].sibling_is_left);
+        assert!(verify_path(&leaves[2], 2, &path, &root, 3).unwrap());
+        // Forged sibling for the lonely node must fail (L2).
+        let mut bad = path.clone();
+        bad[0].sibling = [9u8; 32];
+        assert!(!verify_path(&leaves[2], 2, &bad, &root, 3).unwrap());
+        // Wrong side parity both ways must fail.
+        let mut bad_side = path.clone();
+        bad_side[0].sibling_is_left = true;
+        assert!(!verify_path(&leaves[2], 2, &bad_side, &root, 3).unwrap());
     }
 
     #[test]
