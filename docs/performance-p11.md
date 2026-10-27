@@ -211,6 +211,44 @@ cost, already parallel in the prover since P11.4):
 | G/G2 interp | 16.5 / 9.1 |
 | H full prove `tau=2` | 2660.6, `215034 B` |
 
-Decision: `F4 ≈ 545ms`/rep of a `~1300ms` rep (`~42%`) is still the
-largest remaining cost — a worthwhile single-path target. `C` (240ms)
-stays sequential for now per the one-path rule.
+## P11.5 results (F4 parallelism only)
+
+Implementation (`src/v3/prover.rs`, `P11.5.1`): new
+`broadcast_alpha_prime_all` evaluates the per-canonical-party
+`eval_linear_jb_sparse` + `gp` accumulation with
+`std::thread::scope`, ordered join, `Result` propagation in index
+order. `gp` challenges and `jvp` masks are sampled/derived
+sequentially beforehand; workers touch neither RNG nor transcript.
+`share_worker_count` generalized to `worker_count` (shared by both
+parallel stages). No other stage parallelized.
+
+Tests: 2 new unit tests (`alpha_prime_parallel_matches_sequential`
+over thread counts `1,2,3,5,16` x two back-to-back runs against a
+directly-written sequential reference, plus empty). Verifier-visible
+path (`alpha_p` feeds `hB`) covered by existing round-trip,
+`tampered_broadcast_shares_reject`, determinism, and tamper tests.
+
+Release benchmark, same machine/build, `nproc=16` (two sweeps;
+shared-machine variance visible on verify-only times, verifier
+untouched):
+
+| Set | P11.5 baseline | P11.5 sweep 1 | P11.5 sweep 2 | Bytes | Roundtrip |
+|---:|---:|---:|---:|---|---|
+| 4 | 2228.5 | 1634.0 (1.36x) | 1699.9 (1.31x) | 180474 | ok |
+| 8 | 2587.2 | 1691.2 (1.53x) | 1601.4 (1.62x) | 191994 | ok |
+| 16 | 2406.7 | 1937.0 (1.24x) | 1607.6 (1.50x) | 203514 | ok |
+| 32 | 2645.2 | 1837.0 (1.44x) | 1902.4 (1.39x) | 215034 | ok |
+
+Speedups vs P11.5 baseline rerun; cumulative vs pre-P11.4
+(`3903/4466/4960/5447`): `~2.3x/2.8x/3.1x/2.9x` (32-member
+`5447 -> ~1900ms`). Proof bytes identical at every size; verify
+times within machine variance; roundtrip `ok`.
+
+Full suite: `103 lib (incl. 2 new F4-equivalence) + 2 p11 +
+9 prototype = 114` pass.
+
+Review: `~1.3-1.6x` further prove speedup from the second hot path,
+no byte/behavior change. Remaining sequential prover work is `C`
+hint evals (`~240ms`/rep) plus hashing/openings — left for a future
+single-path step, not attempted here. No `τ`/parameter, circuit,
+`V2`, GGM/Limbo/NTT/GPU, or security-claim change.
