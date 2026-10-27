@@ -15,6 +15,10 @@ use thiserror::Error;
 
 use crate::v2::poseidon2::{self, encode_hash};
 
+/// Practical cap for untrusted set sizes (prevents depth-32 OOM).
+/// Honest small sets are unaffected; larger sets need explicit review.
+pub const MAX_V2_MEMBERS: usize = 1 << 20;
+
 /// Proof that one leaf belongs to a v2 member-set tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleProofV2 {
@@ -66,7 +70,7 @@ impl MerkleTreeV2 {
         if members.is_empty() {
             return Err(V2MerkleError::EmptySet);
         }
-        if members.len() > u32::MAX as usize {
+        if members.len() > MAX_V2_MEMBERS || members.len() > u32::MAX as usize {
             return Err(V2MerkleError::TooManyMembers(members.len()));
         }
 
@@ -218,7 +222,9 @@ pub fn verify_membership_statement(
 /// Canonical depth for `num_members` real leaves: `ceil(log2(n))`, with
 /// depth 0 for a single member.
 pub fn depth_for_members(num_members: u32) -> u32 {
-    debug_assert!(num_members > 0);
+    if num_members == 0 {
+        return 0;
+    }
     if num_members == 1 {
         0
     } else {

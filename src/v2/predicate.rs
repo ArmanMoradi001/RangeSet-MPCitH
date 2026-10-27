@@ -285,6 +285,9 @@ impl CompiledV2 {
     /// tests. It encodes wrapped 32-bit differences so the circuit evaluator,
     /// not the witness builder, is what rejects a false candidate.
     fn build_witness_raw(&self, value: u32, leaf_index: u32, siblings: &[Fr]) -> Vec<Fr> {
+        // Private/test-only: length mismatch would silently zip-truncate,
+        // so fail fast in debug (verifier path already checks depth).
+        debug_assert_eq!(siblings.len(), self.layout.siblings.len());
         let mut witness = vec![Fr::from(0u64); self.layout.num_inputs];
         witness[self.layout.x.index()] = Fr::from(value as u64);
         set_bits(&mut witness, &self.layout.x_bits, value, 32);
