@@ -252,3 +252,42 @@ no byte/behavior change. Remaining sequential prover work is `C`
 hint evals (`~240ms`/rep) plus hashing/openings — left for a future
 single-path step, not attempted here. No `τ`/parameter, circuit,
 `V2`, GGM/Limbo/NTT/GPU, or security-claim change.
+
+## P11.6 baseline (P11.5 state, re-profiled, no code change yet)
+
+HEAD: `0d6d722` (P11.5.2 record). Tree clean.
+Same release benchmark + 32-member profile, same machine/build
+(`i7-13620H`, `rustc 1.98.1`, release `LTO`), `nproc=16`.
+Two sweeps (shared-machine variance):
+
+| Set | Sweep A prove | Sweep B prove | Bytes | Roundtrip |
+|---:|---:|---:|---|---|
+| 4 | 1645.1 | 1488.5 | 180474 | ok |
+| 8 | 1630.5 | 1548.9 | 191994 | ok |
+| 16 | 1682.0 | 1581.6 | 203514 | ok |
+| 32 | 1742.1 | 1698.8 | 215034 | ok |
+
+Verify (untouched path, load-varying): A `277/285, 264/278, 298/303,
+295/297`; B `245/241, 264/257, 275/285, 307/302`.
+Full suite `114` pass assumed (rerun in P11.6.2).
+
+Profile (`v3_profile`, 32-member; `B`/`F4` are sequential
+references — both already parallel in the prover since P11.4/P11.5):
+
+| Section | ms |
+|---|---:|
+| B share reference (sequential) | 1531.2 |
+| C hints (sample+eval+correct+derive, 4 cols) | 229.4 |
+| D leaf commit / D2 root / E paths | 30.0 / 1.4 / 39.6 |
+| F1 interp / F3 bases (hoisted since P11.2) | 74.6 / 89.1 |
+| F2 quad | 0.3 |
+| F4 sparse-linear reference (sequential) | 534.3 |
+| G/G2 interp | 14.8 / 8.5 |
+| H full prove `tau=2` (parallel B+F4) | 1739.1, `215034 B` |
+
+Decision: `C ≈ 229ms`/rep of a `~870ms` rep (`~26%`) is still a
+worthwhile single-path target. Scope is evaluation only: polynomial
+sampling stays sequential in the existing order; only the
+deterministic `eval_poly_all` of already-sampled polys is
+parallelized (commit-phase columns and broadcast-phase derive
+inputs). No other path in this phase.
