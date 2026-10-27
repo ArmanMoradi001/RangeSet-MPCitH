@@ -59,6 +59,54 @@ fn sample_fr(rng: &mut impl RngCore) -> Fr {
     Fr::rand(rng)
 }
 
+/// One packed-share evaluation job: owned secret + owned randomness.
+/// Randomness is sampled sequentially by the caller in the pre-existing
+/// order; workers only run the pure `share()` math, so scheduling cannot
+/// affect outputs or proof bytes.
+struct ShareJob {
+    secret: Vec<Fr>,
+    rand: Vec<Fr>,
+}
+
+/// Worker count for share evaluation: machine parallelism, at least 1,
+/// never more than jobs.
+fn share_worker_count(num_jobs: usize) -> usize {
+    let hw = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(4);
+    hw.min(num_jobs).max(1)
+}
+
+/// Evaluate `share()` for all jobs in parallel, collecting outputs by job
+/// index. Any `num_threads >= 1` gives identical results; threads never
+/// touch the RNG. `share()` inputs are validated upstream, so a failure
+/// here is a programmer error and fails closed via panic (never forges).
+fn parallel_share_all(
+    jobs: &[ShareJob],
+    s: usize,
+    ell: usize,
+    n: usize,
+    num_threads: usize,
+) -> Result<Vec<Vec<Fr>>> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let num_threads = num_threads.min(jobs.len()).max(1);
+    let chunk = (jobs.len() + num_threads - 1) / num_threads;
+    let mut out: Vec<Vec<Fr>> = vec![Vec::new(); jobs.len()];
+    std::thread::scope(|scope| {
+        for (job_chunk, out_chunk) in jobs.chunks(chunk).zip(out.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for (job, slot) in job_chunk.iter().zip(out_chunk.iter_mut()) {
+                    *slot = share(s, ell, n, &job.secret, &job.rand)
+                        .expect("v3 share inputs validated before threading");
+                }
+            });
+        }
+    });
+    Ok(out)
+}
+
 /// Prove a combined range-and-membership statement (same private `x`).
 /// Only `StatementV2::Combined` is supported; anything else is rejected.
 #[allow(clippy::too_many_arguments)]
@@ -156,19 +204,25 @@ fn prove_rep(
     // --- 1. Committed shares: witness packs, mask packs, hint packs. ---
     // Q-column order (fixed convention): witness packs, mask packs, then
     // per MPC batch Π0 hints followed by ΠΣ0 hints.
-    let mut q_shares: Vec<Vec<Fr>> = Vec::new();
+    //
+    // P11.4: randomness is sampled sequentially in the pre-existing order
+    // (RNG consumption and proof bytes unchanged); only the pure `share()`
+    // evaluations run in parallel. Each job owns its samples and workers
+    // never touch the RNG.
+    let mut jobs: Vec<ShareJob> = Vec::with_capacity(n_w + eta);
     let mut q_shift: Vec<usize> = Vec::new();
     for pack in matrix {
         let r: Vec<Fr> = (0..ell).map(|_| sample_fr(rng)).collect();
-        q_shares.push(share(s, ell, n, pack, &r)?);
+        jobs.push(ShareJob { secret: pack.clone(), rand: r });
         q_shift.push(d_beta - (s + ell - 1));
     }
     for _ in 0..eta {
         let secret: Vec<Fr> = (0..s).map(|_| sample_fr(rng)).collect();
         let r: Vec<Fr> = (0..ell).map(|_| sample_fr(rng)).collect();
-        q_shares.push(share(s, ell, n, &secret, &r)?);
+        jobs.push(ShareJob { secret, rand: r });
         q_shift.push(0);
     }
+    let mut q_shares = parallel_share_all(&jobs, s, ell, n, share_worker_count(jobs.len()))?;
     struct BatchCommit {
         v_polys: Vec<Vec<Fr>>,
         vp_polys: Vec<Vec<Fr>>,
@@ -400,4 +454,62 @@ fn broadcast_alpha_at(
         acc += gamma[g] * (c - a * b);
     }
     Ok(acc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_ff::UniformRand;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
+
+    fn test_jobs(seed: u64, num_jobs: usize, s: usize, ell: usize) -> Vec<ShareJob> {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+        (0..num_jobs)
+            .map(|_| ShareJob {
+                secret: (0..s).map(|_| Fr::rand(&mut rng)).collect(),
+                rand: (0..ell).map(|_| Fr::rand(&mut rng)).collect(),
+            })
+            .collect()
+    }
+
+    fn reference_sequential(jobs: &[ShareJob], s: usize, ell: usize, n: usize) -> Vec<Vec<Fr>> {
+        jobs.iter()
+            .map(|j| share(s, ell, n, &j.secret, &j.rand).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn parallel_shares_match_sequential_across_thread_counts() {
+        // Fast-test shape (s=8, ell=3, n=32) plus an odd job count (7)
+        // that does not divide evenly by any tested thread count.
+        let (s, ell, n) = (8usize, 3usize, 32usize);
+        for num_jobs in [1usize, 3, 7, 14] {
+            let jobs = test_jobs(0x9A11 ^ num_jobs as u64, num_jobs, s, ell);
+            let expected = reference_sequential(&jobs, s, ell, n);
+            for threads in [1usize, 2, 3, 4, 7, 16] {
+                let got = parallel_share_all(&jobs, s, ell, n, threads).unwrap();
+                assert_eq!(got, expected, "mismatch jobs={num_jobs} threads={threads}");
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_shares_isolated_across_back_to_back_runs() {
+        // Two consecutive runs (two repetitions) must each match their own
+        // sequential reference: no state leaks between calls.
+        let (s, ell, n) = (8usize, 3usize, 32usize);
+        for rep in 0..2 {
+            let jobs = test_jobs(0xBEEF + rep, 9, s, ell);
+            let expected = reference_sequential(&jobs, s, ell, n);
+            let got = parallel_share_all(&jobs, s, ell, n, 4).unwrap();
+            assert_eq!(got, expected, "rep {rep} mismatch");
+        }
+    }
+
+    #[test]
+    fn parallel_shares_empty_is_empty() {
+        let out = parallel_share_all(&[], 8, 3, 32, 4).unwrap();
+        assert!(out.is_empty());
+    }
 }
