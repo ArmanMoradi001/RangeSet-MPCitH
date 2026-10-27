@@ -1,8 +1,9 @@
 # Fixes roadmap — RangeSet-MPCitH V3 (academic prototype)
 
 Baseline: `aaa5c18` pre-fix. All fixes are breaking transcript changes
-(C1/H1/M1) so they share one protocol bump `v2 -> v3`
-(`V3_PROOF_FORMAT_VERSION 2 -> 3`, `V3_TR_DOMAIN_INIT .../v2 -> .../v3`).
+(C1/H1/M1) so they share one protocol bump `v2 -> v4`
+(`V3_PROOF_FORMAT_VERSION 2 -> 4` to stay distinct from `V2_PROOF_VERSION 3`,
+`V3_TR_DOMAIN_INIT .../v2 -> .../v3`).
 Old proofs are rejected at parse, never re-evaluated. No security claim
 is made by fixing code alone — independent review + FS/extractor/QROM
 work in `docs/` remains open.

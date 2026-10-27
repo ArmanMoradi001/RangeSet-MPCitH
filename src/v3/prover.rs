@@ -30,8 +30,8 @@ use crate::v3::params::V3Params;
 use crate::v3::proof::{OpenedPartyV3, RepProofV3, V3Proof};
 use crate::v3::sharing::{eval_poly, interpolate_coeffs_fast, party_point, share};
 use crate::v3::transcript::{
-    circuit_hash_v3, hash_fr_vecs, TranscriptV3, V3_HASH_TAG_BROADCAST, V3_HASH_TAG_PXI,
-    V3_TR_TAG_BATCH, V3_TR_TAG_GAMMA, V3_TR_TAG_OPEN,
+    circuit_hash_v3, hash_fr_vecs, TranscriptV3, V3_HASH_TAG_BROADCAST, V3_HASH_TAG_DELTA,
+    V3_HASH_TAG_PXI, V3_TR_TAG_BATCH, V3_TR_TAG_GAMMA, V3_TR_TAG_OPEN,
 };
 use crate::{MpcithError, Result};
 
@@ -222,6 +222,13 @@ fn prove_rep(
     }
     let h1p = hash_fr_vecs(V3_HASH_TAG_PXI, &pxi_coeffs);
     tr.absorb_hash(b"h1p", &h1p);
+
+    // C1: bind ΠΣ0 corrections before batching challenges. Without this a
+    // malicious prover sees `gamma'` then picks `delta*` to satisfy the
+    // linear outcome check. `hDelta` commits `rho` corrections in order.
+    let deltas: Vec<Fr> = batch_commits.iter().map(|c| c.delta_u1).collect();
+    let h_delta = hash_fr_vecs(V3_HASH_TAG_DELTA, &[deltas]);
+    tr.absorb_hash(b"hdelta", &h_delta);
 
     // --- 4-5. Batching challenges, broadcasts, hB. ---
     // Sparse LPPC path: lane Lagrange basis weights per canonical party,

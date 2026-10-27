@@ -18,8 +18,8 @@ use crate::v3::proof::V3Proof;
 use crate::v3::prover::complement_set;
 use crate::v3::sharing::{interpolate_coeffs_fast, party_point, FixedInterpolator};
 use crate::v3::transcript::{
-    circuit_hash_v3, hash_fr_vecs, TranscriptV3, V3_HASH_TAG_BROADCAST, V3_HASH_TAG_PXI,
-    V3_TR_TAG_BATCH, V3_TR_TAG_GAMMA, V3_TR_TAG_OPEN,
+    circuit_hash_v3, hash_fr_vecs, TranscriptV3, V3_HASH_TAG_BROADCAST, V3_HASH_TAG_DELTA,
+    V3_HASH_TAG_PXI, V3_TR_TAG_BATCH, V3_TR_TAG_GAMMA, V3_TR_TAG_OPEN,
 };
 use crate::{MpcithError, Result};
 
@@ -164,6 +164,12 @@ fn verify_rep(
         return Err(fail("v3 challenge length mismatch"));
     }
     tr.absorb_hash(b"h1p", &rep.decs_hash);
+
+    // C1: `hDelta` must match prover's commitment before batching challenges.
+    // `rep.delta_u1` length already checked above; hash single inner vec
+    // `[delta_0..delta_{rho-1}]` exactly like the prover.
+    let h_delta = hash_fr_vecs(V3_HASH_TAG_DELTA, &[rep.delta_u1.clone()]);
+    tr.absorb_hash(b"hdelta", &h_delta);
 
     // Batching challenges (verifier recomputes; not transmitted).
     let mut gammas: Vec<Vec<Fr>> = Vec::with_capacity(rho);

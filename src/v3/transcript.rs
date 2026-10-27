@@ -1,9 +1,9 @@
 //! Deterministic transcript and challenge derivation (mechanics only).
 //!
-//! Message order and challenge dependencies follow `V3_PROTOCOL.md` §1:
-//! statement/params/context/suite/circuit-hash/salt absorbed first, then
-//! `h1 → Γ → h1' → (γ,γ') → hB → I` with each challenge bound to the full
-//! prefix. This is the Fiat–Shamir *mechanism*; it carries no security
+//! Message order and challenge dependencies follow `V3_PROTOCOL.md` §1
+//! as fixed in `fixes.md` (C1): statement/params/context/suite/circuit-hash/
+//! salt absorbed first, then `h1 → Γ → h1' → hDelta → (γ,γ') → hB → I`
+//! with each challenge bound to the full prefix. This is the Fiat–Shamir *mechanism*; it carries no security
 //! claim — the QROM/grinding/extractor obligations in `V3_FIAT_SHAMIR.md`
 //! remain open. Under a seeded prover RNG the whole transcript is
 //! deterministic, which the tests rely on.
@@ -18,9 +18,10 @@ use crate::v2::field::encode_fr;
 use crate::{MpcithError, Result};
 
 /// Transcript domain: statement and suite binding prefix.
-/// v2 binds the repetition index (Phase 8.1); v1 transcripts derive
-/// different challenges and are not equivalent.
-pub const V3_TR_DOMAIN_INIT: &[u8] = b"NovaMPC-v3/transcript/v2";
+/// v3 binds the repetition index (Phase 8.1) plus `delta_u1` (C1), `Pu` masks
+/// (H1) and full suite (M1); v1/v2 transcripts derive different challenges
+/// and are not equivalent.
+pub const V3_TR_DOMAIN_INIT: &[u8] = b"NovaMPC-v3/transcript/v3";
 /// Challenge tag: DECS matrix `Γ`.
 pub const V3_TR_TAG_GAMMA: &[u8] = b"v3-decs-challenge";
 /// Challenge tag: MPC batching randomness `(γ, γ')`.
@@ -30,6 +31,8 @@ pub const V3_TR_TAG_OPEN: &[u8] = b"v3-opening";
 
 /// Hash tag: degree-enforcing polynomial vector `Pξ`.
 pub const V3_HASH_TAG_PXI: &[u8] = b"NovaMPC-v3/hash/paxi/v1";
+/// Hash tag: ΠΣ0 correction `delta_u1` vector (C1: bound before batching).
+pub const V3_HASH_TAG_DELTA: &[u8] = b"NovaMPC-v3/hash/delta/v1";
 /// Hash tag: broadcast shares.
 pub const V3_HASH_TAG_BROADCAST: &[u8] = b"NovaMPC-v3/hash/broadcast/v1";
 
@@ -70,6 +73,14 @@ impl TranscriptV3 {
         t.absorb(b"init", V3_TR_DOMAIN_INIT);
         t.absorb(b"suite-protocol", crate::v3::suite::V3_PROTOCOL_ID);
         t.absorb(b"suite-field", crate::v3::suite::V3_FIELD_ID);
+        // M1: bind full suite (was protocol+field only). Changing any of
+        // these changes every challenge (protocol bump v2->v3).
+        t.absorb(
+            b"suite-version",
+            &crate::v3::suite::V3_PROOF_FORMAT_VERSION.to_be_bytes(),
+        );
+        t.absorb(b"suite-poseidon2", crate::v3::suite::V3_POSEIDON2_ID);
+        t.absorb(b"suite-framing", crate::v3::suite::V3_FRAMING_ID);
         t.absorb_u32(b"parties", num_parties);
         t.absorb_u32(b"privacy", privacy_threshold);
         t.absorb_u32(b"packing", packing_width);
