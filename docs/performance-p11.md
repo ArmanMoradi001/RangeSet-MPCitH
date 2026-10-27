@@ -253,6 +253,45 @@ hint evals (`~240ms`/rep) plus hashing/openings — left for a future
 single-path step, not attempted here. No `τ`/parameter, circuit,
 `V2`, GGM/Limbo/NTT/GPU, or security-claim change.
 
+## P11.6 results (C hint-eval parallelism only)
+
+Implementation (`src/v3/prover.rs`, `P11.6.1`): new
+`eval_hint_polys_par` evaluates already-sampled hint polys with
+`std::thread::scope`, ordered collect. Sampling
+(`sample_hint_polys`, `sigma_correction`) stays sequential in the
+pre-existing order — RNG consumption unchanged. Used at both
+deterministic sites: commit-phase columns and broadcast-phase
+derive inputs (fixed v-then-vp order). No other path touched.
+
+Tests: 2 new unit tests (`hint_eval_parallel_matches_sequential`
+over poly counts `1,3,4,5`, thread counts `1,2,3,5,16`, two seeds,
+plus empty). Hint columns feed `h1` and `hB` (both verifier-visible);
+covered by existing round-trip, tamper (`broadcast`, `DECS`,
+`delta_u1`), determinism, and negative tests.
+
+Release benchmark, same machine/build, `nproc=16` (two sweeps):
+
+| Set | P11.6 baseline A | P11.6 baseline B | P11.6 sweep 1 | P11.6 sweep 2 | Bytes | Roundtrip |
+|---:|---:|---:|---:|---:|---|---|
+| 4 | 1645.1 | 1488.5 | 1299.7 | 1219.1 | 180474 | ok |
+| 8 | 1630.5 | 1548.9 | 1275.9 | 1286.9 | 191994 | ok |
+| 16 | 1682.0 | 1581.6 | 1380.6 | 1308.6 | 203514 | ok |
+| 32 | 1742.1 | 1698.8 | 1512.3 | 1455.5 | 215034 | ok |
+
+Speedups vs baselines: `~1.15-1.35x` further (consistent across all
+sizes, both sweeps). Cumulative vs pre-P11.4
+(`3903/4466/4960/5447`): `~3.1x/3.5x/3.8x/3.7x` (32-member
+`5447 -> ~1480ms`). Profile `H` confirms: `1739 -> 1606ms`.
+Bytes identical; verify within machine variance; roundtrip `ok`.
+Full suite: `105 lib (incl. 2 new C-equivalence) + 2 p11 +
+9 prototype = 116` pass.
+
+Review: third consecutive byte-identical speedup from a single
+measured path. Remaining sequential work (leaf hashing, Merkle,
+openings, transcript) is small per the profile; any further step
+needs its own re-profile and justification. No `τ`/parameter,
+circuit, `V2`, GGM/Limbo/NTT/GPU, or security-claim change.
+
 ## P11.6 baseline (P11.5 state, re-profiled, no code change yet)
 
 HEAD: `0d6d722` (P11.5.2 record). Tree clean.
