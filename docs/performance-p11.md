@@ -99,3 +99,51 @@ consumption ordering and needs domain-separated per-task randomness
 to keep `deterministic_under_seeded_rng` byte-identical — a bigger,
 more invasive change requiring your review first. No `τ`/parameter,
 circuit, `V2`, GGM/Limbo/NTT/GPU, or security-claim change was made.
+
+## P11.4 baseline (P11.3 state, no code change yet)
+
+HEAD: `97a78f1` (P11.3 record). Tree clean.
+Post-P11.2 release benchmark, same machine/build (`i7-13620H`,
+`rustc 1.98.1`, release `LTO`), single-threaded:
+
+| Set | Prove (ms) | Verify1/2 (ms) | Bytes | Roundtrip |
+|---:|---:|---|---|---|
+| 4 | 3769.4 | 245.1 / 241.2 | 180474 | ok |
+| 8 | 4244.8 | 268.8 / 263.1 | 191994 | ok |
+| 16 | 4853.2 | 276.0 / 281.6 | 203514 | ok |
+| 32 | 5296.9 | 301.1 / 300.6 | 215034 | ok |
+
+Full suite: `98 lib + 2 p11 + 9 prototype = 109` pass.
+Thread count: 1 (no threads in prover path).
+
+## P11.4 design (recorded before implementing)
+
+Target: `B` share generation only (`1586ms`, `~60%`/rep at 32-member).
+One hot path; `F4/C/D` untouched until this is measured.
+
+Method: sequential pre-generation, parallel pure math.
+`prove_rep` first samples all share randomness sequentially from the
+caller RNG in the exact pre-existing order (witness `r`, then mask
+secrets + `r`), then evaluates `share()` for all jobs with
+`std::thread::scope`, collecting outputs by job index. Workers never
+touch the RNG.
+
+Randomness / domain separation: each job `i` owns the samples drawn
+for it in order — i.e. separation by stable job index over the
+pre-existing stream, fresh per `prove_rep` call (hence per
+repetition). No stream is shared concurrently or reused across tasks
+or reps. Assumption: `share()` is a pure function of
+`(secret, randomness)`; scheduling therefore cannot affect outputs.
+Expected result: byte-identical proofs for the same input and seed.
+
+stdlib vs dependency: `std::thread::scope` (stable, no new
+dependency) with manual chunking is ~20 lines and sufficient for one
+hot path. `rayon` would give `par_iter` ergonomics but adds a
+dependency and version lock to an offline thesis build for no
+measured need yet. Revisit only if manual chunking proves
+error-prone or a second hot path needs join-heavy scheduling.
+
+Acceptance: unit sequential-vs-parallel equality over thread counts
+`1,2,3,4,7,16` and two back-to-back runs; existing determinism +
+verify + tamper tests; benchmark byte sizes unchanged
+(`180474/191994/203514/215034`).
