@@ -152,6 +152,22 @@ impl V3Params {
                 self.num_parties
             )));
         }
+        // M2: broadcast interpolation needs d_α+1 and d2+1 points.
+        // Previously only d_β was checked, failing late in complement_set.
+        if self.broadcast_degree() + 1 > self.num_parties {
+            return Err(MpcithError::InvalidParams(format!(
+                "v3 degree infeasible: d_alpha + 1 = {} exceeds N = {}",
+                self.broadcast_degree() + 1,
+                self.num_parties
+            )));
+        }
+        let d2_plus_1 = 2 * self.packing_width + self.privacy_threshold - 1;
+        if d2_plus_1 > self.num_parties {
+            return Err(MpcithError::InvalidParams(format!(
+                "v3 degree infeasible: d2 + 1 = {d2_plus_1} exceeds N = {}",
+                self.num_parties
+            )));
+        }
         Ok(())
     }
 }
@@ -194,5 +210,7 @@ mod tests {
             .is_err());
         // Degree infeasible: d_beta + 2 = s + l + 1 > N.
         assert!(V3Params::new(16, 8, 16, 2, 1, 1).validate().is_err());
+        // M2: passes d_beta but fails d_alpha/d2 (was late complement_set err).
+        assert!(V3Params::new(32, 3, 20, 2, 1, 1).validate().is_err());
     }
 }
