@@ -178,3 +178,39 @@ candidate but is left for a separate step per the one-path rule —
 it touches challenge-dependent values and needs its own equivalence
 analysis. No `τ`/parameter, circuit, `V2`, GGM/Limbo/NTT/GPU, or
 security-claim change.
+
+## P11.5 baseline (P11.4 state, re-profiled, no code change yet)
+
+HEAD: `418a3f6` (P11.4.2 record). Tree clean.
+Same release benchmark, same machine/build (`i7-13620H`,
+`rustc 1.98.1`, release `LTO`), rerun 2026-10-27:
+
+| Set | Prove (ms) | Verify1/2 (ms) | Bytes | Roundtrip |
+|---:|---:|---|---|---|
+| 4 | 2228.5 | 310.9 / 322.3 | 180474 | ok |
+| 8 | 2587.2 | 362.1 / 347.1 | 191994 | ok |
+| 16 | 2406.7 | 276.2 / 273.0 | 203514 | ok |
+| 32 | 2645.2 | 318.0 / 300.1 | 215034 | ok |
+
+Note: shared dev machine — this rerun is uniformly slower than the
+P11.4.2 sweep (`1957/2138/2401/2618`) including on verify-only times,
+so compare P11.5 changes against this rerun, back-to-back where
+possible. Bytes identical; suite `112` pass assumed (rerun in P11.5.2).
+
+Re-profile (`v3_profile`, 32-member; `B` is the sequential reference
+cost, already parallel in the prover since P11.4):
+
+| Section | ms |
+|---|---:|
+| B share reference (sequential) | 1576.3 |
+| C hints | 240.2 |
+| D leaf commit / D2 root / E paths | 30.7 / 1.4 / 38.1 |
+| F1 interp / F3 bases (hoisted since P11.2) | 72.3 / 87.8 |
+| F2 quad | 0.3 |
+| F4 sparse linear (`269 x m2=3642`) | 544.8 |
+| G/G2 interp | 16.5 / 9.1 |
+| H full prove `tau=2` | 2660.6, `215034 B` |
+
+Decision: `F4 ≈ 545ms`/rep of a `~1300ms` rep (`~42%`) is still the
+largest remaining cost — a worthwhile single-path target. `C` (240ms)
+stays sequential for now per the one-path rule.
