@@ -28,7 +28,9 @@ use crate::v3::hints::{
 };
 use crate::v3::params::V3Params;
 use crate::v3::proof::{OpenedPartyV3, RepProofV3, V3Proof};
-use crate::v3::sharing::{eval_poly, interpolate_coeffs_fast, party_point, share};
+use crate::v3::sharing::{
+    eval_poly, interpolate_coeffs_fast, party_point, share,
+};
 use crate::v3::transcript::{
     circuit_hash_v3, hash_fr_vecs, TranscriptV3, V3_HASH_TAG_BROADCAST, V3_HASH_TAG_DELTA,
     V3_HASH_TAG_PXI, V3_TR_TAG_BATCH, V3_TR_TAG_GAMMA, V3_TR_TAG_OPEN,
@@ -87,11 +89,22 @@ pub fn prove_combined_v3(
     rng.fill_bytes(&mut salt);
     let set_root = encode_fr(&root);
 
+    // P11.2: invariant setup hoisted out of the per-rep loop. The lane
+    // interpolator and canonical-party Lagrange bases depend only on the
+    // compiled program and packing width — not on witness, randomness, or
+    // challenges — so computing them once for all τ reps is exact.
+    let lane_interp = program.lane_interpolator()?;
+    let s = params.packing_width as usize;
+    let d2 = 2 * s + params.privacy_threshold as usize - 2;
+    let ap_bases: Vec<Vec<Fr>> = (0..d2 + 1)
+        .map(|i| lane_interp.basis_evals(party_point(s, i)))
+        .collect();
+
     let mut reps = Vec::with_capacity(params.pok_reps as usize);
     for rep in 0..params.pok_reps {
         reps.push(prove_rep(
             &matrix, &program, params, &context, &circuit_hash, &salt,
-            lo, hi, &set_root, num_members, depth, rep, rng,
+            lo, hi, &set_root, num_members, depth, rep, rng, &ap_bases,
         )?);
     }
 
@@ -124,6 +137,7 @@ fn prove_rep(
     depth: u32,
     rep_index: u32,
     rng: &mut impl RngCore,
+    ap_bases: &[Vec<Fr>],
 ) -> Result<RepProofV3> {
     let s = params.packing_width as usize;
     let ell = params.privacy_threshold as usize;
@@ -247,16 +261,14 @@ fn prove_rep(
 
     // --- 4-5. Batching challenges, broadcasts, hB. ---
     // Sparse LPPC path: lane Lagrange basis weights per canonical party,
-    // shared by all batches. Per-batch cost scales with the number of
+    // shared by all batches. `lane_interp`/`ap_bases` are hoisted by the
+    // caller (P11.2): invariant for fixed program/params, so reuse is exact.
+    // Per-batch cost scales with the number of
     // nonzero constraint terms rather than constraint·pack·s polynomial
     // evaluations; the result is mathematically identical (exact field
     // arithmetic), so proof bytes are unchanged.
-    let lane_interp = program.lane_interpolator()?;
     let canon_ap: Vec<usize> = (0..d2 + 1).collect();
-    let ap_bases: Vec<Vec<Fr>> = canon_ap
-        .iter()
-        .map(|i| lane_interp.basis_evals(party_point(s, *i)))
-        .collect();
+    debug_assert_eq!(ap_bases.len(), canon_ap.len());
     let mut batch_alpha: Vec<Vec<Fr>> = Vec::new(); // canonical JαK shares
     let mut batch_alpha_p: Vec<Vec<Fr>> = Vec::new();
     for (b, commit) in batch_commits.iter().enumerate() {
