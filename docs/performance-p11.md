@@ -292,6 +292,46 @@ openings, transcript) is small per the profile; any further step
 needs its own re-profile and justification. No `τ`/parameter,
 circuit, `V2`, GGM/Limbo/NTT/GPU, or security-claim change.
 
+## P11.7 final profile and stop/go (no code change)
+
+HEAD: `2980f15` (P11.6.2 record). Tree clean.
+Same release benchmark (two sweeps) + 32-member profile, same
+machine/build (`i7-13620H`, `rustc 1.98.1`, release `LTO`),
+`nproc=16`:
+
+| Set | Sweep 1 prove | Sweep 2 prove | Bytes | Roundtrip |
+|---:|---:|---:|---|---|
+| 4 | 1341.1 | 1319.8 | 180474 | ok |
+| 8 | 1368.3 | 1360.1 | 191994 | ok |
+| 16 | 1375.1 | 1411.7 | 203514 | ok |
+| 32 | 1526.0 | 1507.0 | 215034 | ok |
+
+Verify (untouched path, load-varying): `265/264, 266/270, 294/289,
+306/301` and `252/254, 268/265, 286/281, 307/311`.
+Profile `H` full prove `tau=2`: `1548.7ms` (`215034 B`).
+Component references (sequential kernels; `B/F4/C` already parallel
+in the prover): `B 1766.2`, `C 254.4`, `D 31.1`, `D2 1.5`,
+`E 42.0`, `F1 81.1` + `F3 94.8` (hoisted since P11.2),
+`F2 0.3`, `F4 588.1`, `G 15.3`, `G2 9.6`, `A 15.6`.
+
+Largest remaining costs: per rep (`~775ms`) the measured sequential
+pieces are `D+E ≈ 73ms`, `G/G2 ≈ 25ms`, plus unmeasured glue
+(transcript, sampling, hashing, allocation); the only unmeasured
+single loop of plausible size is the `vp_corr` correction loop
+(`8192` per-party `correction_basis_eval`, each with a field
+inverse). Bounding generously from the profile: no remaining
+*isolated, measured* item exceeds `~73ms`/rep (`D+E`), i.e. at most
+`~146ms` total ≈ `9%` of `~1550ms` — under the `10%` threshold
+(`~155ms`). The `vp_corr` loop is unmeasured and bundled with
+sequential derive logic, so claiming it needs a fresh attribution
+phase first.
+
+Recommendation: **STOP**. Three byte-identical speedups banked
+(`5447 -> ~1480ms` cumulative, `~3.7x` on 32-member); further work
+should start with a dedicated attribution phase for the residual
+sequential glue (or accept current performance) rather than another
+blind parallelization. No change proposed or implemented in P11.7.
+
 ## P11.6 baseline (P11.5 state, re-profiled, no code change yet)
 
 HEAD: `0d6d722` (P11.5.2 record). Tree clean.
