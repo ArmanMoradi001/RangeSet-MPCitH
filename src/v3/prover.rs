@@ -108,6 +108,35 @@ fn parallel_share_all(
     Ok(out)
 }
 
+/// Evaluate already-sampled hint polynomials at all party points in
+/// parallel, collecting columns in input order.
+///
+/// P11.6: sampling stays sequential on the caller in the pre-existing
+/// order; this runs only the deterministic `eval_poly_all`
+/// evaluations. Workers never touch the RNG/transcript. Any
+/// `num_threads >= 1` gives identical outputs.
+fn eval_hint_polys_par(
+    polys: &[Vec<Fr>],
+    s: usize,
+    n: usize,
+    num_threads: usize,
+) -> Vec<Vec<Fr>> {
+    if polys.is_empty() {
+        return Vec::new();
+    }
+    let num_threads = num_threads.min(polys.len()).max(1);
+    let chunk = (polys.len() + num_threads - 1) / num_threads;
+    let mut out: Vec<Vec<Vec<Fr>>> = vec![Vec::new(); polys.chunks(chunk).len()];
+    std::thread::scope(|scope| {
+        for (pc, oc) in polys.chunks(chunk).zip(out.iter_mut()) {
+            scope.spawn(move || {
+                *oc = eval_hint_polys(pc, s, n);
+            });
+        }
+    });
+    out.into_iter().flatten().collect()
+}
+
 /// Evaluate aggregated linear broadcast shares `Jα′K` at all canonical
 /// parties in parallel, collecting results in canonical order.
 ///
@@ -285,18 +314,33 @@ fn prove_rep(
         vp_polys: Vec<Vec<Fr>>,
         delta_u1: Fr,
     }
-    let mut batch_commits: Vec<BatchCommit> = Vec::new();
+    struct SampledBatch {
+        v_polys: Vec<Vec<Fr>>,
+        vp_polys: Vec<Vec<Fr>>,
+        delta_u1: Fr,
+    }
+    // Sampling stays sequential in the pre-existing order (RNG
+    // consumption unchanged); only the deterministic evaluations of the
+    // already-sampled polys below run in parallel (P11.6).
+    let mut sampled: Vec<SampledBatch> = Vec::with_capacity(rho);
     for _ in 0..rho {
         let v_polys = sample_hint_polys(&pi_v.hint_degrees(d_beta), rng);
         let vp_polys = sample_hint_polys(&pi_vp.hint_degrees(d_beta), rng);
         let delta_u1 = sigma_correction(s, pi_vp.delta, &vp_polys);
-        for polys in [&v_polys, &vp_polys] {
-            for p in polys {
-                q_shares.push(crate::v3::sharing::eval_poly_all(p, s, n));
-                q_shift.push(d_beta - (p.len() - 1));
-            }
+        sampled.push(SampledBatch { v_polys, vp_polys, delta_u1 });
+    }
+    let mut batch_commits: Vec<BatchCommit> = Vec::with_capacity(rho);
+    for sb in sampled {
+        let SampledBatch { mut v_polys, vp_polys, delta_u1 } = sb;
+        let n_v = v_polys.len();
+        v_polys.extend(vp_polys);
+        let cols = eval_hint_polys_par(&v_polys, s, n, worker_count(v_polys.len()));
+        for (p, col) in v_polys.iter().zip(cols.into_iter()) {
+            q_shares.push(col);
+            q_shift.push(d_beta - (p.len() - 1));
         }
-        batch_commits.push(BatchCommit { v_polys, vp_polys, delta_u1 });
+        let vp_back = v_polys.split_off(n_v);
+        batch_commits.push(BatchCommit { v_polys: v_polys, vp_polys: vp_back, delta_u1 });
     }
     debug_assert_eq!(q_shares.len(), n_w + eta + rho * (pi_v.num_hints + pi_vp.num_hints));
 
@@ -386,13 +430,29 @@ fn prove_rep(
         let g = tr.sample_frs(V3_TR_TAG_BATCH, (2 * b) as u32, m1);
         let gp = tr.sample_frs(V3_TR_TAG_BATCH, (2 * b + 1) as u32, program.m2());
         // Derived mask sharings at all parties (full vectors, then select).
-        let jt = pi_v.derive(s, &eval_hint_polys(&commit.v_polys, s, n))?;
+        // P11.6: the four deterministic evaluations run in parallel in
+        // fixed v-then-vp order; sampling already happened above.
+        let nv = commit.v_polys.len();
+        let combined: Vec<Vec<Fr>> = commit
+            .v_polys
+            .iter()
+            .chain(commit.vp_polys.iter())
+            .cloned()
+            .collect();
+        let mut hint_cols = eval_hint_polys_par(
+            &combined,
+            s,
+            n,
+            worker_count(combined.len()),
+        );
+        let mut vp_corr = hint_cols.split_off(nv);
+        let v_cols = hint_cols;
+        let jt = pi_v.derive(s, &v_cols)?;
         let jv: Vec<Fr> = jt
             .iter()
             .enumerate()
             .map(|(i, v)| *v * zero_mask_eval(s, i))
             .collect();
-        let mut vp_corr = eval_hint_polys(&commit.vp_polys, s, n);
         for i in 0..n {
             vp_corr[0][i] += commit.delta_u1 * correction_basis_eval(s, party_point(s, i));
         }
@@ -658,5 +718,34 @@ mod tests {
         let (program, _, _, _, _, _) = f4_fixture(0xE11);
         let out = broadcast_alpha_prime_all(&program, &[], &[], &[], &[], &[], 4).unwrap();
         assert!(out.is_empty());
+    }
+
+    fn hint_test_polys(seed: u64, degrees: &[usize]) -> Vec<Vec<Fr>> {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+        sample_hint_polys(degrees, &mut rng)
+    }
+
+    #[test]
+    fn hint_eval_parallel_matches_sequential_across_thread_counts() {
+        // Reference is the pre-P11.6 sequential `eval_hint_polys`; the
+        // helper must match it for every thread count. Degrees mirror the
+        // real Pi$ tail shape (full d_beta then short tail).
+        let (s, n) = (8usize, 32usize);
+        for num_polys in [1usize, 3, 4, 5] {
+            let degrees: Vec<usize> = (0..num_polys).map(|j| 10 - (j % 3) * 3).collect();
+            for rep in 0..2 {
+                let polys = hint_test_polys(0xB1C ^ (rep as u64) ^ num_polys as u64, &degrees);
+                let expected = eval_hint_polys(&polys, s, n);
+                for threads in [1usize, 2, 3, 5, 16] {
+                    let got = eval_hint_polys_par(&polys, s, n, threads);
+                    assert_eq!(got, expected, "polys={num_polys} rep={rep} threads={threads}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hint_eval_parallel_empty_is_empty() {
+        assert!(eval_hint_polys_par(&[], 8, 32, 4).is_empty());
     }
 }
