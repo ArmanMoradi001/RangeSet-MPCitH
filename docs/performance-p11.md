@@ -147,3 +147,34 @@ Acceptance: unit sequential-vs-parallel equality over thread counts
 `1,2,3,4,7,16` and two back-to-back runs; existing determinism +
 verify + tamper tests; benchmark byte sizes unchanged
 (`180474/191994/203514/215034`).
+
+## P11.4 results (share-generation parallelism only)
+
+Implementation (`src/v3/prover.rs`): `P11.4.1` pre-generates share
+randomness sequentially (identical order/values), then evaluates
+`share()` for witness+mask jobs with `std::thread::scope`
+(`share_worker_count` = `available_parallelism`, capped by jobs).
+No other stage parallelized; `F4/C/D` untouched.
+
+Release benchmark, same machine/build/threads (`nproc=16`,
+workers ≤ 16):
+
+| Set | Prove before | Prove after | Speedup | Verify1/2 | Bytes | Roundtrip |
+|---:|---:|---:|---:|---|---|---|
+| 4 | 3769.4 | 1957.2 | 1.93x | 244.0 / 238.0 | 180474 | ok |
+| 8 | 4244.8 | 2137.6 | 1.99x | 257.2 / 256.2 | 191994 | ok |
+| 16 | 4853.2 | 2400.8 | 2.02x | 280.9 / 281.4 | 203514 | ok |
+| 32 | 5296.9 | 2618.4 | 2.02x | 297.2 / 302.7 | 215034 | ok |
+
+Full suite: `101 lib (incl. 3 new parallel-equivalence) + 2 p11 +
+9 prototype = 112` pass, incl. `deterministic_under_seeded_rng`,
+`tampered_delta_u1_rejects`, all tamper/negative tests.
+Proof bytes identical to baseline at every set size; verification
+times unchanged (verifier untouched).
+
+Review: `~2x` prove speedup from one hot path, no byte/behavior
+change. `F4` sparse-linear (`540ms`/rep) is the next measured
+candidate but is left for a separate step per the one-path rule —
+it touches challenge-dependent values and needs its own equivalence
+analysis. No `τ`/parameter, circuit, `V2`, GGM/Limbo/NTT/GPU, or
+security-claim change.
