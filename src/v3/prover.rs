@@ -12,7 +12,7 @@
 //! witness columns and is not used.
 
 use ark_bn254::Fr;
-use ark_ff::{Field, Zero};
+use ark_ff::Field;
 use rand::RngCore;
 
 use crate::v2::field::encode_fr;
