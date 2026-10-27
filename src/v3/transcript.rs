@@ -142,6 +142,8 @@ impl TranscriptV3 {
 
     /// Draw the opening subset: `k` distinct party indices in `[0, n)`,
     /// partial Fisher–Yates, deterministic for a fixed transcript.
+    /// Uses `u64` rejection sampling (L1 fix) so the draw is uniform;
+    /// biased `%` and 32-bit truncation would break the uniform-`I` assumption.
     pub fn sample_subset(&self, tag: &[u8], counter: u32, n: usize, k: usize) -> Result<Vec<u32>> {
         if k > n || n == 0 {
             return Err(MpcithError::InvalidParams(format!(
@@ -151,7 +153,16 @@ impl TranscriptV3 {
         let mut rng = self.challenge_rng(tag, counter);
         let mut indices: Vec<u32> = (0..n as u32).collect();
         for i in 0..k {
-            let j = i + (rng.next_u64() as usize % (n - i));
+            let range = (n - i) as u64;
+            // Rejection bound: largest multiple use, avoids modulo bias.
+            let limit = u64::MAX - (u64::MAX % range);
+            let r: u64 = loop {
+                let v = rng.next_u64();
+                if v < limit {
+                    break v % range;
+                }
+            };
+            let j = i + (r as usize);
             indices.swap(i, j);
         }
         Ok(indices[..k].to_vec())
