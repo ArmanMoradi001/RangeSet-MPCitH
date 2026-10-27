@@ -68,13 +68,14 @@ struct ShareJob {
     rand: Vec<Fr>,
 }
 
-/// Worker count for share evaluation: machine parallelism, at least 1,
-/// never more than jobs.
-fn share_worker_count(num_jobs: usize) -> usize {
+/// Worker count for data-parallel prover stages: machine parallelism,
+/// at least 1, never more than tasks. Outputs are collected in task
+/// order, so any count gives identical results.
+fn worker_count(num_tasks: usize) -> usize {
     let hw = std::thread::available_parallelism()
         .map(|v| v.get())
         .unwrap_or(4);
-    hw.min(num_jobs).max(1)
+    hw.min(num_tasks).max(1)
 }
 
 /// Evaluate `share()` for all jobs in parallel, collecting outputs by job
@@ -105,6 +106,62 @@ fn parallel_share_all(
         }
     });
     Ok(out)
+}
+
+/// Evaluate aggregated linear broadcast shares `Jα′K` at all canonical
+/// parties in parallel, collecting results in canonical order.
+///
+/// P11.5: inputs (`wshares`, `jvp`, `gp`, `ap_bases`, `canon`) are fixed
+/// before the call — challenges already sampled, masks already derived —
+/// so workers run pure field math and never touch the RNG/transcript.
+/// Any `num_threads >= 1` gives identical outputs; errors propagate in
+/// index order via ordered join (fail-closed, never forges).
+#[allow(clippy::too_many_arguments)]
+fn broadcast_alpha_prime_all(
+    program: &ConstraintProgramV3,
+    wshares: &[Vec<Fr>],
+    jvp: &[Fr],
+    gp: &[Fr],
+    ap_bases: &[Vec<Fr>],
+    canon: &[usize],
+    num_threads: usize,
+) -> Result<Vec<Fr>> {
+    if canon.is_empty() {
+        return Ok(Vec::new());
+    }
+    let num_threads = num_threads.min(canon.len()).max(1);
+    let chunk = (canon.len() + num_threads - 1) / num_threads;
+    let per_chunk: Vec<Vec<Result<Fr>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = canon
+            .chunks(chunk)
+            .enumerate()
+            .map(|(ci, pc)| {
+                scope.spawn(move || {
+                    let mut v = Vec::with_capacity(pc.len());
+                    for (rel, i) in pc.iter().enumerate() {
+                        let k = ci * chunk + rel;
+                        let r: Result<Fr> = (|| {
+                            let pack_values: Vec<Fr> =
+                                wshares.iter().map(|col| col[*i]).collect();
+                            let jb = program.eval_linear_jb_sparse(&ap_bases[k], &pack_values)?;
+                            let mut acc = jvp[*i];
+                            for (jb_j, gp_j) in jb.iter().zip(gp.iter()) {
+                                acc += *gp_j * *jb_j;
+                            }
+                            Ok(acc)
+                        })();
+                        v.push(r);
+                    }
+                    v
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("v3 F4 worker panicked"))
+            .collect()
+    });
+    per_chunk.into_iter().flatten().collect()
 }
 
 /// Prove a combined range-and-membership statement (same private `x`).
@@ -222,7 +279,7 @@ fn prove_rep(
         jobs.push(ShareJob { secret, rand: r });
         q_shift.push(0);
     }
-    let mut q_shares = parallel_share_all(&jobs, s, ell, n, share_worker_count(jobs.len()))?;
+    let mut q_shares = parallel_share_all(&jobs, s, ell, n, worker_count(jobs.len()))?;
     struct BatchCommit {
         v_polys: Vec<Vec<Fr>>,
         vp_polys: Vec<Vec<Fr>>,
@@ -346,20 +403,10 @@ fn prove_rep(
             .iter()
             .map(|i| broadcast_alpha_at(program, &q_shares[..n_w], &jv, &g, *i))
             .collect::<Result<Vec<Fr>>>()?;
-        let alpha_p: Vec<Fr> = canon_ap
-            .iter()
-            .enumerate()
-            .map(|(k, i)| {
-                let pack_values: Vec<Fr> =
-                    q_shares[..n_w].iter().map(|col| col[*i]).collect();
-                let jb = program.eval_linear_jb_sparse(&ap_bases[k], &pack_values)?;
-                let mut acc = jvp[*i];
-                for (jb_j, gp_j) in jb.iter().zip(gp.iter()) {
-                    acc += *gp_j * *jb_j;
-                }
-                Ok(acc)
-            })
-            .collect::<Result<Vec<Fr>>>()?;
+        let alpha_p: Vec<Fr> = broadcast_alpha_prime_all(
+            program, &q_shares[..n_w], &jvp, &gp, ap_bases, &canon_ap,
+            worker_count(canon_ap.len()),
+        )?;
         batch_alpha.push(alpha);
         batch_alpha_p.push(alpha_p);
     }
@@ -510,6 +557,106 @@ mod tests {
     #[test]
     fn parallel_shares_empty_is_empty() {
         let out = parallel_share_all(&[], 8, 3, 32, 4).unwrap();
+        assert!(out.is_empty());
+    }
+
+    /// Build the small-test inputs for one F4 evaluation: witness shares,
+    /// derived `jvp` mask, batching vector, and hoisted lane bases.
+    fn f4_fixture(seed: u64) -> (
+        ConstraintProgramV3,
+        Vec<Vec<Fr>>,
+        Vec<Fr>,
+        Vec<Fr>,
+        Vec<Vec<Fr>>,
+        Vec<usize>,
+    ) {
+        use crate::v2::merkle::MerkleTreeV2;
+        use crate::v2::predicate::{
+            compile_from_statement, MembershipStatementV2, RangeStatementV2, StatementV2,
+        };
+        use crate::v3::params::V3Params;
+        let params = V3Params::fast_insecure_test();
+        let (s, ell, n) = (
+            params.packing_width as usize,
+            params.privacy_threshold as usize,
+            params.num_parties as usize,
+        );
+        let d_beta = params.hint_degree() as usize;
+        let d2 = 2 * s + ell - 2;
+        let tree = MerkleTreeV2::build(&[10u32, 20, 30, 40]).unwrap();
+        let statement = StatementV2::Combined {
+            range: RangeStatementV2::new(10, 40).unwrap(),
+            membership: MembershipStatementV2::new(
+                tree.root(),
+                tree.num_members(),
+                tree.depth(),
+            )
+            .unwrap(),
+        };
+        let compiled = compile_from_statement(&statement).unwrap();
+        let program = ConstraintProgramV3::compile(compiled.circuit(), &params).unwrap();
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+        let inputs = compiled
+            .witness_for(20, Some(&tree.prove_membership(1).unwrap()))
+            .unwrap();
+        let matrix = program.witness_matrix(compiled.circuit(), &inputs).unwrap();
+        let wshares: Vec<Vec<Fr>> = matrix
+            .iter()
+            .map(|pack| {
+                let r: Vec<Fr> = (0..ell).map(|_| Fr::rand(&mut rng)).collect();
+                share(s, ell, n, pack, &r).unwrap()
+            })
+            .collect();
+        let pi_vp = PiDollarV3::for_target(s, ell, d_beta, d2).unwrap();
+        let vp_polys = sample_hint_polys(&pi_vp.hint_degrees(d_beta), &mut rng);
+        let delta = sigma_correction(s, pi_vp.delta, &vp_polys);
+        let mut vp_hints = eval_hint_polys(&vp_polys, s, n);
+        for i in 0..n {
+            vp_hints[0][i] += delta * correction_basis_eval(s, party_point(s, i));
+        }
+        let jvp = pi_vp.derive(s, &vp_hints).unwrap();
+        let gp: Vec<Fr> = (0..program.m2()).map(|_| Fr::rand(&mut rng)).collect();
+        let lane = program.lane_interpolator().unwrap();
+        let ap_bases: Vec<Vec<Fr>> =
+            (0..d2 + 1).map(|i| lane.basis_evals(party_point(s, i))).collect();
+        let canon: Vec<usize> = (0..d2 + 1).collect();
+        (program, wshares, jvp, gp, ap_bases, canon)
+    }
+
+    #[test]
+    fn alpha_prime_parallel_matches_sequential_across_thread_counts() {
+        // Reference is the pre-P11.5 sequential loop written directly;
+        // the helper must match it for every thread count.
+        for rep in 0..2 {
+            let (program, wshares, jvp, gp, ap_bases, canon) = f4_fixture(0xF450 + rep);
+            let expected: Vec<Fr> = canon
+                .iter()
+                .enumerate()
+                .map(|(k, i)| {
+                    let pack_values: Vec<Fr> =
+                        wshares.iter().map(|col| col[*i]).collect();
+                    let jb = program.eval_linear_jb_sparse(&ap_bases[k], &pack_values).unwrap();
+                    let mut acc = jvp[*i];
+                    for (jb_j, gp_j) in jb.iter().zip(gp.iter()) {
+                        acc += *gp_j * *jb_j;
+                    }
+                    acc
+                })
+                .collect();
+            for threads in [1usize, 2, 3, 5, 16] {
+                let got = broadcast_alpha_prime_all(
+                    &program, &wshares, &jvp, &gp, &ap_bases, &canon, threads,
+                )
+                .unwrap();
+                assert_eq!(got, expected, "rep {rep} threads={threads} mismatch");
+            }
+        }
+    }
+
+    #[test]
+    fn alpha_prime_parallel_empty_is_empty() {
+        let (program, _, _, _, _, _) = f4_fixture(0xE11);
+        let out = broadcast_alpha_prime_all(&program, &[], &[], &[], &[], &[], 4).unwrap();
         assert!(out.is_empty());
     }
 }
