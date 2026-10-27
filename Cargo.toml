@@ -1,0 +1,25 @@
+[package]
+name = "range-set-mpcith"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental MPC-in-the-head range and set-membership proof prototype"
+publish = false
+
+[lib]
+name = "range_set_mpcith"
+path = "src/lib.rs"
+
+[dependencies]
+ark-bn254 = "0.6"
+ark-ff = { version = "0.6", default-features = false }
+bincode = "1.3"
+blake3 = "1.5"
+hex = "0.4"
+rand = "0.8"
+rand_chacha = "0.3"
+thiserror = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
