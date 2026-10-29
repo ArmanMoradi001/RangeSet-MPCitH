@@ -37,7 +37,8 @@ was not performed: it would require a second protocol implementation
 or a broad production refactor, which is out of scope for this
 campaign (`attack.md` §4-A1). Prover-side refusals above therefore say
 nothing about verifier soundness beyond the listed statement-binding
-checks. No false statement was accepted by any API in A1.
+checks. No invalid-witness proof was generated and presented to the
+verifier in A1, so no such experiment could accept or reject one.
 
 ## Full suite after A1
 
