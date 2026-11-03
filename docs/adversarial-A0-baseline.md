@@ -49,8 +49,9 @@ release `opt-level=3` + LTO.
 | 32 | 5 | 2788.7 | 2878.5 | 559.7 / 553.4 | 578.1 / 509.2 | 215034 | ok |
 
 Note: this machine was loaded during A0 (all timings, including the
-untouched single-threaded verifier, run ~1.5–1.7x above the
-`benchmark.md` post-P11 rows: prove `~1.3–1.5 s`, verify
+untouched single-threaded verifier, run roughly 1.5–1.9x above the
+`benchmark.md` post-P11 rows depending on case — about 1.9x on the
+32-member proving time — versus prove `~1.3–1.5 s`, verify
 `~0.24–0.32 s`). Proof sizes are identical to every prior run, and
 all eight generated proofs verified twice with codec round-trip `ok`.
 The slowdown is shared-machine variance, not a code regression:

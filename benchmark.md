@@ -138,8 +138,9 @@ campaign end: `105` lib + `4` A1 + `2` A2 + `4` A3 + `1` A4 +
 Honest controls (A0): valid 4/8/16/32-member proofs verified twice
 with codec round-trip `ok`; proof sizes `180,474`, `191,994`,
 `203,514`, `215,034` bytes — identical to every run in this document.
-The A0 machine was loaded, so its timings ran ~1.5–1.7x above the
-rows above (including the untouched verifier); that is shared-machine
+The A0 machine was loaded, so its timings ran roughly 1.5–1.9x above the
+rows above depending on case (about 1.9x on the 32-member proving time),
+including on the untouched verifier; that is shared-machine
 variance, not a regression, and those timings are not presented as a
 performance result.
 
