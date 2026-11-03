@@ -124,3 +124,50 @@ current post-fix, post-P11 set-size experiment.
 All figures describe this experimental prototype and this machine. They do
 not establish formal soundness, zero-knowledge security, or deployment
 performance on Hyperledger Fabric.
+
+## Adversarial test campaign (not a security proof)
+
+Small, deterministic robustness campaign per `attack.md` (plan only;
+untracked in this repo). Preset everywhere: `V3Params::fast_insecure_test`
+(`N=32,ℓ=3,s=8,η=2,ρ=1,τ=1`), four-member set `[10,20,30,40]`, seeded
+RNGs — except the A2 swap test (`τ=2`) and the A3 odd-`N` test
+(`N=33`). These presets are intentionally insecure. Final suite at
+campaign end: `105` lib + `4` A1 + `2` A2 + `4` A3 + `1` A4 +
+`2` p11 + `9` prototype = `127` passed, `0` failed.
+
+Honest controls (A0): valid 4/8/16/32-member proofs verified twice
+with codec round-trip `ok`; proof sizes `180,474`, `191,994`,
+`203,514`, `215,034` bytes — identical to every run in this document.
+The A0 machine was loaded, so its timings ran ~1.5–1.7x above the
+rows above (including the untouched verifier); that is shared-machine
+variance, not a regression, and those timings are not presented as a
+performance result.
+
+| Scenario | Attempt | Honest control | Observed outcome | Test(s) | Limitation |
+|---|---|---|---|---|---|
+| A1 boundary | value == `lo`/`hi` of the range, real member | same proof verifies + round-trips | Verified + round-trip ok | `tests/v3_adversarial_a1.rs::a1_boundary_witnesses_verify` | Controls only; small preset |
+| A1 out-of-range | member below `lo` / above `hi` via public prover API | — (builder refused) | Refused at witness build | `a1_out_of_range_builder_refusals` | Prover-API refusal, not a verifier result |
+| A1 mismatched membership | cross-member proof swap; hand-edited index/path | — (builder refused) | Refused at witness build | `a1_mismatched_membership_builder_refusals` | Private inputs; not a verifier result |
+| A1 statement binding | one honest proof vs altered `lo`/`hi`/widened range/member count | honest statement verifies | Rejected | `a1_altered_statement_binding_rejects` | Non-canonical depth unconstructible (constructor refusal) |
+| A2 replay | τ=2 proof with `reps[0]`/`reps[1]` swapped | unswapped proof verifies | Rejected | `tests/v3_adversarial_a2.rs::a2_repetition_slot_swap_rejects` | Tampered honest proof, not a forgery |
+| A2 binding | change rep index / context, re-derive challenge | identical inputs re-derive identically | Challenge changed for each changed field | `a2_transcript_binding_changes_challenge` | Binding observation only; no grinding search |
+| A3 openings | alter index/leaf-randomness/sibling/direction/path length/share count/opened count (fresh copy each) | unmutated proof verifies | Rejected, no panic/hang/overallocation | `tests/v3_adversarial_a3.rs::a3_opening_tampering_rejects` | Selected mutations only |
+| A3 broadcast/DECS shapes | short `broadcast_alpha[_prime]`, missing batch, short/missing DECS row | unmutated proof verifies | Rejected | `a3_broadcast_decs_shape_rejects` | Shape checks, not value forgeries |
+| A3 parser | empty input; half truncation; `reps` prefix `= u32::MAX` | valid bytes parse | Rejected (cap before allocation) | `a3_parser_malformed_rejects` | No time bound asserted; not a DoS proof |
+| A3 odd N | honest proof, share-commitment `N=33` (lonely leaf) | verifies + round-trips | Verified + round-trip ok | `a3_odd_party_count_end_to_end` | One odd size only |
+| A4 ordering | drive transcript twice identically; then change only committed `delta_u1` | identical drive reproduces | `Gamma` unchanged, batching challenges changed | `tests/v3_adversarial_a4.rs::a4_correction_bound_before_batching` | Order check on transcript object, not an adaptive attack |
+| A4 tamper (reused) | flip `delta_u1` in an honest proof | unmutated proof verifies | Rejected | `tests/v3_prototype.rs::tampered_delta_u1_rejects` | Value mutation, not an adaptive forgery |
+
+Not performed: no adaptive malicious prover and no false-statement
+proof was constructed or submitted to the verifier in any scenario
+(A1 would have required a second protocol implementation; A4
+performs no challenge search). Prover/witness-builder refusals (A1
+out-of-range and mismatched-membership rows) say nothing about
+verifier soundness beyond the listed binding/rejection checks.
+
+These finite tests do not establish soundness, zero knowledge, proof
+of knowledge, 127-bit security, resistance to untested attacks, or
+production readiness. Full per-scenario reports:
+`docs/adversarial-A0-baseline.md`, `docs/adversarial-A1.md`,
+`docs/adversarial-A2.md`, `docs/adversarial-A3.md`,
+`docs/adversarial-A4.md`.
