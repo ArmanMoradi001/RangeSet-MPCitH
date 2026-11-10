@@ -415,16 +415,23 @@ fn prove_rep(
     }
     debug_assert_eq!(q_shares.len(), n_w + eta + rho * (pi_v.num_hints + pi_vp.num_hints));
 
+    // P13: pure functions of (s, n) cached once per rep instead of
+    // recomputed per loop nest: all party points, canonical interpolation
+    // point sets, and the correction-basis evaluations (single inversion).
+    let party_pts: Vec<Fr> = (0..n).map(|i| party_point(s, i)).collect();
+    let canon_d_pts: Vec<Fr> = (0..d_beta + 1).map(|i| party_point(s, i)).collect();
+    let canon_a_pts: Vec<Fr> = (0..d_alpha + 1).map(|i| party_point(s, i)).collect();
+    let canon_ap_pts: Vec<Fr> = (0..d2 + 1).map(|i| party_point(s, i)).collect();
+    let corr_basis_all = correction_basis_evals_for_parties(s, n);
+
     let mut leaf_rand = vec![[0u8; 32]; n];
     for r in leaf_rand.iter_mut() {
         rng.fill_bytes(&mut *r);
     }
-    let leaves: Vec<[u8; 32]> = (0..n)
-        .map(|i| {
-            let values: Vec<Fr> = q_shares.iter().map(|v| v[i]).collect();
-            leaf_commit(i as u32, &values, &leaf_rand[i])
-        })
-        .collect();
+    // P13: leaves are independent given committed shares — parallel,
+    // collected in party order (identical bytes).
+    let leaves: Vec<[u8; 32]> =
+        leaf_commits_parallel(&q_shares, &leaf_rand, n, capped_workers(n, worker_cap));
     let h1 = merkle_root(&leaves)?;
 
     // --- 2-3. Γ challenge, Pξ evaluation, h1'. ---
@@ -457,7 +464,7 @@ fn prove_rep(
         let evals: Vec<Fr> = canon_d
             .iter()
             .map(|i| {
-                let e = party_point(s, *i);
+                let e = party_pts[*i];
                 // Independent mask, coeff 1, no shift (deg == dβ).
                 let mut acc = pu_col[*i];
                 for (qi, qs) in q_idx.iter().enumerate() {
@@ -472,8 +479,7 @@ fn prove_rep(
                 acc
             })
             .collect();
-        let pts: Vec<Fr> = canon_d.iter().map(|i| party_point(s, *i)).collect();
-        pxi_coeffs.push(interpolate_coeffs_fast(&pts, &evals)?);
+        pxi_coeffs.push(interpolate_coeffs_fast(&canon_d_pts, &evals)?);
     }
     let h1p = hash_fr_vecs(V3_HASH_TAG_PXI, &pxi_coeffs);
     tr.absorb_hash(b"h1p", &h1p);
@@ -526,9 +532,9 @@ fn prove_rep(
             .collect();
         // P12: one inversion for all N parties (`den` depends only on `s`);
         // field values identical to the per-party `correction_basis_eval` loop.
-        let corr_basis = correction_basis_evals_for_parties(s, n);
+        // P13: hoisted out of the batch loop (cached per rep).
         for i in 0..n {
-            vp_corr[0][i] += commit.delta_u1 * corr_basis[i];
+            vp_corr[0][i] += commit.delta_u1 * corr_basis_all[i];
         }
         let jvp = pi_vp.derive(s, &vp_corr)?;
         // Broadcast shares at canonical index sets.
@@ -563,16 +569,11 @@ fn prove_rep(
     let mut s_alpha: Vec<Vec<Fr>> = Vec::new();
     let mut s_alpha_p: Vec<Vec<Fr>> = Vec::new();
     for (a, ap) in batch_alpha.iter().zip(batch_alpha_p.iter()) {
-        let pa = interpolate_coeffs_fast(
-            &(0..d_alpha + 1).map(|i| party_point(s, i)).collect::<Vec<Fr>>(),
-            a,
-        )?;
-        let pap = interpolate_coeffs_fast(
-            &(0..d2 + 1).map(|i| party_point(s, i)).collect::<Vec<Fr>>(),
-            ap,
-        )?;
-        s_alpha.push(s_set.iter().map(|i| eval_poly(&pa, party_point(s, *i))).collect());
-        s_alpha_p.push(sp_set.iter().map(|i| eval_poly(&pap, party_point(s, *i))).collect());
+        // P13: canonical interpolation points cached per rep.
+        let pa = interpolate_coeffs_fast(&canon_a_pts, a)?;
+        let pap = interpolate_coeffs_fast(&canon_ap_pts, ap)?;
+        s_alpha.push(s_set.iter().map(|i| eval_poly(&pa, party_pts[*i])).collect());
+        s_alpha_p.push(sp_set.iter().map(|i| eval_poly(&pap, party_pts[*i])).collect());
     }
     // DECS responses Pξ(e_i) = Pu_k(e_i) + Σ_q Γ·Q̃_q(e_i), i in Sξ.
     let mut decs_resp: Vec<Vec<Fr>> = Vec::with_capacity(eta);
@@ -580,7 +581,7 @@ fn prove_rep(
         let pu_col = &q_shares[n_w + k];
         let mut row = Vec::with_capacity(sx_set.len());
         for i in &sx_set {
-            let e = party_point(s, *i);
+            let e = party_pts[*i];
             let mut acc = pu_col[*i];
             for (qi, qs) in q_idx.iter().enumerate() {
                 let qv = if q_shift[*qs] == 0 {
@@ -595,17 +596,15 @@ fn prove_rep(
         decs_resp.push(row);
     }
 
-    let mut opened = Vec::with_capacity(ell);
-    for oi in &opened_idx {
-        let path = merkle_path(&leaves, *oi as usize)?;
-        opened.push(OpenedPartyV3 {
-            party_index: *oi,
-            shares: q_shares.iter().map(|v| v[*oi as usize]).collect(),
-            path: path.iter().map(|s| s.sibling).collect(),
-            path_left: path.iter().map(|s| s.sibling_is_left).collect(),
-            leaf_randomness: leaf_rand[*oi as usize],
-        });
-    }
+    // P13: openings are independent given shares/leaves — parallel,
+    // collected in challenge order (identical bytes).
+    let opened = opened_parties_parallel(
+        &q_shares,
+        &leaf_rand,
+        &leaves,
+        &opened_idx,
+        capped_workers(opened_idx.len(), worker_cap),
+    )?;
 
     Ok(RepProofV3 {
         commitment_root: h1,
@@ -617,6 +616,89 @@ fn prove_rep(
         decs_responses: decs_resp,
         delta_u1: batch_commits.iter().map(|c| c.delta_u1).collect(),
     })
+}
+
+/// Commit all `n` party leaves in parallel, collecting in party order.
+/// Pure function of the committed shares and leaf randomness; any thread
+/// count gives identical output.
+fn leaf_commits_parallel(
+    q_shares: &[Vec<Fr>],
+    leaf_rand: &[[u8; 32]],
+    n: usize,
+    num_threads: usize,
+) -> Vec<[u8; 32]> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let num_threads = num_threads.min(n).max(1);
+    let chunk = n.div_ceil(num_threads);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n)
+            .step_by(chunk)
+            .map(|start| {
+                scope.spawn(move || {
+                    let end = (start + chunk).min(n);
+                    let mut v = Vec::with_capacity(end - start);
+                    for i in start..end {
+                        let values: Vec<Fr> = q_shares.iter().map(|col| col[i]).collect();
+                        v.push(leaf_commit(i as u32, &values, &leaf_rand[i]));
+                    }
+                    v
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("v3 leaf worker panicked"))
+            .collect()
+    })
+}
+
+/// Assemble all opened parties (share rows + Merkle paths) in parallel,
+/// collecting in challenge order. Read-only over shares/leaves; any thread
+/// count gives identical output; path errors fail closed in order.
+fn opened_parties_parallel(
+    q_shares: &[Vec<Fr>],
+    leaf_rand: &[[u8; 32]],
+    leaves: &[[u8; 32]],
+    opened_idx: &[u32],
+    num_threads: usize,
+) -> Result<Vec<OpenedPartyV3>> {
+    if opened_idx.is_empty() {
+        return Ok(Vec::new());
+    }
+    let num_threads = num_threads.min(opened_idx.len()).max(1);
+    let chunk = opened_idx.len().div_ceil(num_threads);
+    let parts: Vec<Result<Vec<OpenedPartyV3>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = opened_idx
+            .chunks(chunk)
+            .map(|idx_chunk| {
+                scope.spawn(move || -> Result<Vec<OpenedPartyV3>> {
+                    let mut v = Vec::with_capacity(idx_chunk.len());
+                    for oi in idx_chunk {
+                        let path = merkle_path(leaves, *oi as usize)?;
+                        v.push(OpenedPartyV3 {
+                            party_index: *oi,
+                            shares: q_shares.iter().map(|col| col[*oi as usize]).collect(),
+                            path: path.iter().map(|s| s.sibling).collect(),
+                            path_left: path.iter().map(|s| s.sibling_is_left).collect(),
+                            leaf_randomness: leaf_rand[*oi as usize],
+                        });
+                    }
+                    Ok(v)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("v3 opening worker panicked"))
+            .collect()
+    });
+    let mut out = Vec::with_capacity(opened_idx.len());
+    for p in parts {
+        out.extend(p?);
+    }
+    Ok(out)
 }
 
 /// `JαK_i = JvK_i + Σ_g γ_g·(c−a·b)` at party `i` (Protocol 8 step 5).
