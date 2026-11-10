@@ -13,7 +13,8 @@
 
 use ark_bn254::Fr;
 use ark_ff::Field;
-use rand::RngCore;
+use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 
 use crate::v2::field::encode_fr;
 use crate::v2::merkle::MerkleProofV2;
@@ -23,7 +24,7 @@ use crate::v2::predicate::{
 use crate::v3::commit::{leaf_commit, merkle_path, merkle_root};
 use crate::v3::constraints::ConstraintProgramV3;
 use crate::v3::hints::{
-    correction_basis_eval, eval_hint_polys, sample_hint_polys, sigma_correction,
+    correction_basis_evals_for_parties, eval_hint_polys, sample_hint_polys, sigma_correction,
     zero_mask_eval, PiDollarV3,
 };
 use crate::v3::params::V3Params;
@@ -76,6 +77,18 @@ fn worker_count(num_tasks: usize) -> usize {
         .map(|v| v.get())
         .unwrap_or(4);
     hw.min(num_tasks).max(1)
+}
+
+/// Same as [`worker_count`], additionally capped at `cap` (used to split
+/// machine parallelism across concurrent repetitions). `cap == 0` means
+/// uncapped (pre-P12 behavior).
+fn capped_workers(num_tasks: usize, cap: usize) -> usize {
+    let w = worker_count(num_tasks);
+    if cap == 0 {
+        w
+    } else {
+        w.min(cap).max(1)
+    }
 }
 
 /// Evaluate `share()` for all jobs in parallel, collecting outputs by job
@@ -235,11 +248,68 @@ pub fn prove_combined_v3(
         .collect();
 
     let mut reps = Vec::with_capacity(params.pok_reps as usize);
-    for rep in 0..params.pok_reps {
+    let tau = params.pok_reps as usize;
+    if tau <= 1 {
         reps.push(prove_rep(
             &matrix, &program, params, &context, &circuit_hash, &salt,
-            lo, hi, &set_root, num_members, depth, rep, rng, &ap_bases,
+            lo, hi, &set_root, num_members, depth, 0, rng, &ap_bases, 0,
         )?);
+    } else {
+        // P12: run repetitions concurrently. Per-rep 32-byte seeds are drawn
+        // sequentially from the caller RNG in rep order (deterministic given
+        // the caller seed); each rep then runs on its own `ChaCha20Rng`
+        // stream, so scheduling cannot affect outputs and results collected
+        // in rep order are deterministic. Inner stage parallelism is capped
+        // at a fair share of machine threads to avoid oversubscription.
+        // Note: τ>1 proofs use these domain-separated streams (proof *values*
+        // differ from the pre-P12 sequential stream; sizes and the verified
+        // relation are unchanged). The τ==1 path above is byte-identical.
+        let mut seeds = Vec::with_capacity(tau);
+        for _ in 0..tau {
+            let mut seed = [0u8; 32];
+            rng.fill_bytes(&mut seed);
+            seeds.push(seed);
+        }
+        let hw = std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(4);
+        let inner_cap = hw.div_ceil(tau).max(1);
+        // Explicit shared borrows (all `Copy`): the `move` closures below
+        // copy these references instead of moving the owned values.
+        let matrix_r: &[Vec<Fr>] = &matrix;
+        let program_r: &ConstraintProgramV3 = &program;
+        let ap_bases_r: &[Vec<Fr>] = &ap_bases;
+        let context_r: &[u8; 32] = &context;
+        let salt_r: &[u8; 32] = &salt;
+        let set_root_r: &[u8; 32] = &set_root;
+        let results: Vec<Result<RepProofV3>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = seeds
+                .into_iter()
+                .enumerate()
+                .map(|(rep, seed)| {
+                    scope.spawn(move || {
+                        let mut rep_rng = ChaCha20Rng::from_seed(seed);
+                        prove_rep(
+                            matrix_r, program_r, params, context_r, &circuit_hash,
+                            salt_r, lo, hi, set_root_r, num_members, depth,
+                            rep as u32, &mut rep_rng, ap_bases_r, inner_cap,
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(r) => r,
+                    Err(_) => Err(MpcithError::CircuitError(
+                        "v3 rep worker panicked".into(),
+                    )),
+                })
+                .collect()
+        });
+        for r in results {
+            reps.push(r?);
+        }
     }
 
     Ok(V3Proof {
@@ -272,6 +342,7 @@ fn prove_rep(
     rep_index: u32,
     rng: &mut impl RngCore,
     ap_bases: &[Vec<Fr>],
+    worker_cap: usize,
 ) -> Result<RepProofV3> {
     let s = params.packing_width as usize;
     let ell = params.privacy_threshold as usize;
@@ -308,7 +379,7 @@ fn prove_rep(
         jobs.push(ShareJob { secret, rand: r });
         q_shift.push(0);
     }
-    let mut q_shares = parallel_share_all(&jobs, s, ell, n, worker_count(jobs.len()))?;
+    let mut q_shares = parallel_share_all(&jobs, s, ell, n, capped_workers(jobs.len(), worker_cap))?;
     struct BatchCommit {
         v_polys: Vec<Vec<Fr>>,
         vp_polys: Vec<Vec<Fr>>,
@@ -334,7 +405,7 @@ fn prove_rep(
         let SampledBatch { mut v_polys, vp_polys, delta_u1 } = sb;
         let n_v = v_polys.len();
         v_polys.extend(vp_polys);
-        let cols = eval_hint_polys_par(&v_polys, s, n, worker_count(v_polys.len()));
+        let cols = eval_hint_polys_par(&v_polys, s, n, capped_workers(v_polys.len(), worker_cap));
         for (p, col) in v_polys.iter().zip(cols.into_iter()) {
             q_shares.push(col);
             q_shift.push(d_beta - (p.len() - 1));
@@ -443,7 +514,7 @@ fn prove_rep(
             &combined,
             s,
             n,
-            worker_count(combined.len()),
+            capped_workers(combined.len(), worker_cap),
         );
         let mut vp_corr = hint_cols.split_off(nv);
         let v_cols = hint_cols;
@@ -453,8 +524,11 @@ fn prove_rep(
             .enumerate()
             .map(|(i, v)| *v * zero_mask_eval(s, i))
             .collect();
+        // P12: one inversion for all N parties (`den` depends only on `s`);
+        // field values identical to the per-party `correction_basis_eval` loop.
+        let corr_basis = correction_basis_evals_for_parties(s, n);
         for i in 0..n {
-            vp_corr[0][i] += commit.delta_u1 * correction_basis_eval(s, party_point(s, i));
+            vp_corr[0][i] += commit.delta_u1 * corr_basis[i];
         }
         let jvp = pi_vp.derive(s, &vp_corr)?;
         // Broadcast shares at canonical index sets.
@@ -465,7 +539,7 @@ fn prove_rep(
             .collect::<Result<Vec<Fr>>>()?;
         let alpha_p: Vec<Fr> = broadcast_alpha_prime_all(
             program, &q_shares[..n_w], &jvp, &gp, ap_bases, &canon_ap,
-            worker_count(canon_ap.len()),
+            capped_workers(canon_ap.len(), worker_cap),
         )?;
         batch_alpha.push(alpha);
         batch_alpha_p.push(alpha_p);
@@ -566,6 +640,7 @@ fn broadcast_alpha_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::v3::hints::correction_basis_eval;
     use ark_ff::UniformRand;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
