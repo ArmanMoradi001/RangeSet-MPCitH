@@ -24,9 +24,9 @@ Prover holds `w`; both sides hold statement, params, context.
 
 | # | Dir | Message | FR25b basis |
 |---|---|---------|-------------|
-| 1 | P→V | `salt ∈ {0,1\}^{2λ}` (fresh per proof), Merkle root `h1` over `N` leaves `com_i = Com(JwK_i ∥ JuK_i ∥ JβK_i… ; ρ_i)` (witness packs, DECS mask packs, hint packs of JvK/Jv′K). Transcript prefix per rep additionally absorbs `rep_index` (Phase 8.1; domain v2) | P5.1; salt follows SmallWood §5.3 (multi-proof binding), absent in FR25b — recorded delta |
-| 2 | V→P | `Γ ∈ F^{η×\|Q\|}` where, as implemented, `\|Q\|` = witness + mask + hint packs (`prover.rs:190-197`; deviation (a) below — paper's `Q` excludes the mask) | P5.1a–b, Eq. 14–15 |
-| 3 | P→V | `h1' = Hash(Pξ)`, `Pξ = Γ·Q̃` with `Q̃` the shift-augmented columns (deviation (b) below); paper: `Pξ = Γ·Q + Pu`, Eq. 15 | P5.1b |
+| 1 | P→V | `salt ∈ {0,1\}^{2λ}` (fresh per proof), Merkle root `h1` over `N` leaves `com_i = Com(JwK_i ∥ JuK_i ∥ JβK_i… ; ρ_i)` (witness packs, DECS mask packs, hint packs of JvK/Jv′K). Transcript prefix per rep additionally absorbs `rep_index` (Phase 8.1; domain v3) | P5.1; salt follows SmallWood §5.3 (multi-proof binding), absent in FR25b — recorded delta |
+| 2 | V→P | `Γ ∈ F^{η×\|Q\|}` where, as implemented, `\|Q\| = n_w + ρ·n_hints` covers witness + hint packs only (`prover.rs:360-372` `num_q_paper`/`q_idx`); the `η` mask packs `Pu` are added with coefficient 1, per paper Eq. 15 (H1 fix) | P5.1a–b, Eq. 14–15 |
+| 3 | P→V | `h1' = Hash(Pξ)`, `Pξ_k = Pu_k + Σ_q Γ_{k,q}·Q̃_q` with `Q̃` the shift-augmented hint columns (deviation (b) below); matches paper `Pξ = Γ·Q + Pu`, Eq. 15 | P5.1b |
 | 4 | V→P | batching `γ ∈ F^{m1}`, `γ' ∈ F^{m2}` | Prot. 8 step 4 |
 | 5 | P→V | `hB = Hash(JαK[1..dα+1] ∥ Jα′K[…])` (one broadcast round; ΠLigero needs no adaptive hints, so P5's `t`-loop collapses) | P5.4–5 with `t = 1` |
 | 6 | V→P | opening set `I ⊂ [N]`, `\|I\| = ℓ` | P5.6 |
@@ -41,12 +41,16 @@ Source obtained in Phase 6 (eprint PDF via Wayback snapshot
 (Eq. 13 = basic `JξK` relation, Eq. 14 = plain concatenation
 `Q := Pw|Pβ1|…`, Eq. 15 = `Pξ := Γ·Q + Pu`).
 
-- (a) **Mask folded into Γ.** Paper: `Q` covers witness + hint polys,
+- (a) **Mask `Pu` with coefficient 1 (H1 fix; formerly "mask folded into Γ").** Paper: `Q` covers witness + hint polys,
   mask `Pu` added with coefficient 1 (Eq. 15; P5.1b message
-  `Γ ∈ F^{η×|Q|}`). Implementation: the `η` mask packs are ordinary
-  `Γ`-weighted columns (`prover.rs:207-217`, `verifier.rs:352-360`), so
-  the as-built `Γ` is `η×(n_w+η+n_h)` and there is no standalone `Pu`
-  term. Detection mechanism (pre-commit `h1'`, reconstruction over
+  `Γ ∈ F^{η×|Q|}`). Implementation (current): the `η` mask packs live at
+  committed columns `n_w..n_w+η`, are skipped by `q_idx`, and are added
+  unweighted (`acc = Pu` then `+= Γ·Q̃`; `prover.rs:360-407`,
+  `verifier.rs:163-164,224-225,353-388`), so the as-built
+  `Γ` is `η×(n_w+ρ·n_h)` and there is a standalone `Pu` term with
+  coefficient 1 and shift 0. The pre-H1 code folded masks into `Γ`;
+  that deviation is superseded and no longer describes the tree.
+  Detection mechanism (pre-commit `h1'`, reconstruction over
   `dβ+1` points, hash-equality) is unchanged; the bound transfer is
   proved in `V3_AUDIT.md` (F1 resolution) with the identical numerical
   term.
@@ -84,7 +88,7 @@ proof-of-work explicitly deferred).
    with `S` shares; check `hB`. (P5.8, parties'-computation check; Lemma 3
    gives the `1/|F|^ρ` false-positive term.)
 3. **DECS**: recompute shifted values `Q̃(e_i) = e_i^{shift}·share` for `i ∈ I`
-   (shifts per deviation (b)); `Pξ(e_i) = Σ_q Γ_q·Q̃_q(e_i)`; interpolate
+   (shifts per deviation (b); masks shift 0); `Pξ(e_i) = Pu(e_i) + Σ_q Γ_q·Q̃_q(e_i)`; interpolate
    over `Sξ ∪ I` (`dβ+1` points); check equality with hashed `h1'`. (P5.8
    DECS check; Theorem 1 gives `C(N,dβ+2)/|F|^η` for the paper's
    combination — transfer to the as-built combination is proved in
