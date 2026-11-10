@@ -130,6 +130,52 @@ this commit: `105 lib + 4 A1 + 2 A2 + 4 A3 + 1 A4 + 2 p11 + 9 prototype
 = 127` pass. As before: in-memory verify only; no parse, Fabric,
 ledger, or network timing; no security claim.
 
+## Post-P13 measurement (new; older tables retained above)
+
+Recorded 2026-11-10, same machine/build/seeds/scenarios as P12, three
+sweeps, no warm-up. Changes are prover-only (no parameter, circuit,
+protocol, transcript, proof-format, or verifier change):
+
+- Parallel leaf commits (`leaf_commits_parallel`) and parallel opening
+  assembly (`opened_parties_parallel`), both order-preserving
+  (`src/v3/prover.rs`).
+- Per-rep caches: all party points, canonical interpolation point sets,
+  and the correction-basis vector (already single-inversion since P12b)
+  computed once per rep instead of per loop nest; canonical point vecs
+  passed by reference instead of rebuilt per batch.
+
+| Set members | Merkle depth | Prove sweep 1 (ms) | Prove sweep 2 (ms) | Prove sweep 3 (ms) | Verify range (ms, 2 checks x 3 sweeps) | Proof bytes | Codec round-trip |
+|---:|---:|---:|---:|---:|---|---|---|
+| 4 | 2 | 819.7 | 818.7 | 809.8 | 236–240 | 180,474 | Pass |
+| 8 | 3 | 869.0 | 876.5 | 859.6 | 255–263 | 191,994 | Pass |
+| 16 | 4 | 960.2 | 924.1 | 946.5 | 272–276 | 203,514 | Pass |
+| 32 | 5 | 1,013.1 | 1,008.6 | 1,020.3 | 292–297 | 215,034 | Pass |
+
+Raw rows:
+`4,2,819.7,180474,240.4,237.3,ok`,
+`8,3,869.0,191994,263.4,254.9,ok`,
+`16,4,960.2,203514,271.5,271.9,ok`,
+`32,5,1013.1,215034,297.0,293.3,ok` /
+`4,2,818.7,180474,238.2,239.2,ok`,
+`8,3,876.5,191994,257.3,256.2,ok`,
+`16,4,924.1,203514,275.8,273.6,ok`,
+`32,5,1008.6,215034,291.5,292.2,ok` /
+`4,2,809.8,180474,239.6,236.0,ok`,
+`8,3,859.6,191994,258.3,255.9,ok`,
+`16,4,946.5,203514,273.4,273.4,ok`,
+`32,5,1020.3,215034,293.2,293.2,ok`.
+
+Honest summary: proving now takes **~0.81–0.82 s** (4 members),
+**~0.86–0.88 s** (8), **~0.92–0.96 s** (16), **~1.01–1.02 s** (32);
+verification unchanged (**~0.24–0.30 s**, verifier untouched). Versus P12
+that is another **~30–80 ms** per scenario — exactly the small residual
+predicted in P11.7, no more. The sub-1000 ms goal is now met for the 4-,
+8-, and 16-member scenarios on all three sweeps; the 32-member scenario
+remains marginally above (`~1.01–1.02 s`, best sweep `1008.6 ms`).
+Full debug suite: `105 lib + 4 A1 + 2 A2 + 4 A3 + 1 A4 + 2 p11 +
+9 prototype = 127` pass. Same exclusions and no-security-claim scope as
+all rows above.
+
 ## How to reproduce
 
 From the repository root, run:
