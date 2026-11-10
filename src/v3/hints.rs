@@ -104,6 +104,30 @@ pub fn correction_basis_eval(s: usize, x: Fr) -> Fr {
     num * den.inverse().unwrap_or(Fr::zero())
 }
 
+/// Batched `correction_basis_eval` at all `n` party points with a single
+/// field inversion: `den` depends only on `s`, so inverting it once instead
+/// of per party yields identical field values with `n-1` fewer inversions.
+/// Used by the prover's per-batch `vp_corr` loop (`N=8192` parties); the
+/// scalar helper above stays for verifier/test call sites (`ℓ`-scale).
+pub fn correction_basis_evals_for_parties(s: usize, n: usize) -> Vec<Fr> {
+    let w1 = coord_point(0);
+    let mut den = Fr::one();
+    for k in 1..s {
+        den *= w1 - coord_point(k);
+    }
+    let den_inv = den.inverse().unwrap_or(Fr::zero());
+    (0..n)
+        .map(|i| {
+            let x = party_point(s, i);
+            let mut num = Fr::one();
+            for k in 1..s {
+                num *= x - coord_point(k);
+            }
+            num * den_inv
+        })
+        .collect()
+}
+
 /// Prover-side ΠΣ0 correction: `Δu1 = −Σ_k Pv(ω_k)` from the hint
 /// polynomials, where `Pv(ω_k) = Σ_j P_j(ω_k)·ω_k^{(j−1)·δ}`.
 pub fn sigma_correction(s: usize, delta: usize, hint_polys: &[Vec<Fr>]) -> Fr {
