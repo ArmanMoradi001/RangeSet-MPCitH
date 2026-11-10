@@ -36,7 +36,7 @@ pub struct RepProofV3 {
     pub opened: Vec<OpenedPartyV3>,
     /// `JαK` shares on `S` (`dα+1−ℓ` values) per MPC batch.
     pub broadcast_alpha: Vec<Vec<Fr>>,
-    /// `Jα′K` shares on `S′` (`2s−1` values) per MPC batch.
+    /// `Jα′K` shares on `S′` (`d2+1−ℓ` values, i.e. `2s−1` given `d2 = 2s+ℓ−2`) per MPC batch.
     pub broadcast_alpha_prime: Vec<Vec<Fr>>,
     /// DECS responses: `η × |Sξ|` field elements.
     pub decs_responses: Vec<Vec<Fr>>,
