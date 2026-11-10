@@ -73,6 +73,63 @@ post-P11 `~1.5 s` / `~0.30 s` at identical byte sizes. The P11 gain
 sparse-linear broadcast, and hint evaluation — proof bytes and the
 verified relation are unchanged.
 
+## Post-P12 measurement (new; old table retained above)
+
+Recorded 2026-11-10 after two prover-only changes (no parameter, circuit,
+protocol, transcript, proof-format, or verifier change):
+
+- **P12a — parallel repetitions:** the `τ=2` reps run concurrently in a
+  `std::thread::scope`. Per-rep 32-byte seeds are drawn sequentially from
+  the caller RNG in rep order, so the same caller seed still gives the same
+  proof; inner stage parallelism is capped at a fair share of machine
+  threads (`src/v3/prover.rs`). The `τ=1` path is untouched and
+  byte-identical to before.
+- **P12b — batched correction basis:** `correction_basis_evals_for_parties`
+  (`src/v3/hints.rs`) inverts the `s`-only denominator once instead of per
+  party (`N-1` fewer inversions); field values are identical to the
+  per-party loop it replaces.
+
+Honesty notes: `τ=2` proof *values* differ from pre-P12 runs (re-seeded
+per-rep streams) while proof *sizes* are identical (`180,474 / 191,994 /
+203,514 / 215,034`) and every proof verifies plus round-trips. Three
+sweeps, same scenarios/seeds as the old table, no warm-up — read ranges,
+not single numbers. Same machine as the old table (i7-13620H, `nproc=16`,
+14 GiB, `rustc/cargo 1.98.1`, release `opt-level=3` + LTO +
+`codegen-units=1`); kernel `7.0.0-42-generic` (old rows: `-38`).
+
+| Set members | Merkle depth | Prove sweep 1 (ms) | Prove sweep 2 (ms) | Prove sweep 3 (ms) | Verify range (ms, 2 checks x 3 sweeps) | Proof bytes | Codec round-trip |
+|---:|---:|---:|---:|---:|---|---|---|
+| 4 | 2 | 880.2 | 839.3 | 872.5 | 237–247 | 180,474 | Pass |
+| 8 | 3 | 920.0 | 891.6 | 933.8 | 255–280 | 191,994 | Pass |
+| 16 | 4 | 1,037.7 | 1,026.7 | 983.2 | 272–277 | 203,514 | Pass |
+| 32 | 5 | 1,101.0 | 1,060.2 | 1,083.9 | 293–309 | 215,034 | Pass |
+
+Raw rows:
+`4,2,880.2,180474,246.9,242.4,ok`,
+`8,3,920.0,191994,279.8,261.1,ok`,
+`16,4,1037.7,203514,277.0,273.6,ok`,
+`32,5,1101.0,215034,296.1,295.0,ok` /
+`4,2,839.3,180474,241.6,239.1,ok`,
+`8,3,891.6,191994,260.2,255.4,ok`,
+`16,4,1026.7,203514,273.6,272.2,ok`,
+`32,5,1060.2,215034,293.3,294.2,ok` /
+`4,2,872.5,180474,241.1,237.4,ok`,
+`8,3,933.8,191994,258.6,256.1,ok`,
+`16,4,983.2,203514,273.3,271.9,ok`,
+`32,5,1083.9,215034,309.4,294.6,ok`.
+
+Honest summary: proving now takes **~0.84–0.93 s** (4–8 members),
+**~0.98–1.04 s** (16 members), **~1.06–1.10 s** (32 members);
+verification is unchanged (**~0.24–0.31 s**, verifier untouched).
+Versus the retained post-P11 rows above, that is roughly **1.5x faster**
+on 4–8 members and **~1.4x** on 16–32 members. The sub-1000 ms goal is
+met for the 4- and 8-member scenarios on all three sweeps; the
+16-member scenario straddles it (one sweep under, two just over) and the
+32-member scenario stays just above (`~1.06–1.10 s`). Full debug suite at
+this commit: `105 lib + 4 A1 + 2 A2 + 4 A3 + 1 A4 + 2 p11 + 9 prototype
+= 127` pass. As before: in-memory verify only; no parse, Fabric,
+ledger, or network timing; no security claim.
+
 ## How to reproduce
 
 From the repository root, run:
