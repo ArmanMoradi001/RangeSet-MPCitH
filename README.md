@@ -59,7 +59,7 @@ methodology: [`benchmark.md`](benchmark.md).
   transcript ordering). Finite rejection tests only; they establish no
   soundness, zero-knowledge, or proof-of-knowledge claim.
 - `tests/v3_p11_perf.rs` — parallel-vs-sequential equivalence checks.
-- `cargo test --offline` runs everything: **105 lib + 22 integration = 127 pass.**
+- `cargo test --offline` runs everything: **105 lib + 35 integration = 140 pass.**
 
 ## Project layout
 
