@@ -11,6 +11,7 @@
 pub mod commit;
 pub mod constraints;
 pub mod decs;
+pub mod envelope;
 pub mod hints;
 pub mod matrix;
 pub mod params;
