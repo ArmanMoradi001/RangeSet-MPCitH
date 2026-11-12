@@ -4,6 +4,7 @@
 pub mod error;
 pub mod v2;
 pub mod v3;
+pub mod attester;
 
 pub use error::MpcithError;
 pub type Result<T> = std::result::Result<T, MpcithError>;
