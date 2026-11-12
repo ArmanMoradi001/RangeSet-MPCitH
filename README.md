@@ -30,7 +30,7 @@ Protocol details: [`docs/protocol.md`](docs/protocol.md).
 ## Quick start
 
 ```sh
-cargo test --offline                              # full suite: 127 pass
+cargo test --offline                              # full suite: 150 pass
 cargo run --offline --release --example v3_benchmark   # set-size benchmark
 cargo run --offline --release --example v3_profile     # prover cost profile
 ```
@@ -59,7 +59,14 @@ methodology: [`benchmark.md`](benchmark.md).
   transcript ordering). Finite rejection tests only; they establish no
   soundness, zero-knowledge, or proof-of-knowledge claim.
 - `tests/v3_p11_perf.rs` — parallel-vs-sequential equivalence checks.
-- `cargo test --offline` runs everything: **105 lib + 35 integration = 140 pass.**
+- `tests/v3_envelope.rs` — envelope verify/reject reasons, codec
+  strictness, anchor-hash stability (13 tests).
+- `tests/v3_attester.rs` — CLI prove→verify round-trip plus the real HTTP
+  layer over loopback sockets (3 tests).
+- `fabric/chaincode/rangeset_test.go` — MockStub tests for registration,
+  hash-bound submit, and attester-MSP-gated attestation (6 tests,
+  `go test ./...`).
+- `cargo test --offline` runs everything: **112 lib + 38 integration = 150 pass.**
 
 ## Project layout
 
@@ -69,6 +76,14 @@ methodology: [`benchmark.md`](benchmark.md).
   Poseidon2 + Merkle membership, statement compiler, suite ids. The old V2
   proof protocol is **not** part of this crate (the `v2` module name is a
   source-path legacy).
+- `src/attester.rs` + `src/bin/rsp-{prove,verify,attester}.rs` —
+  ledger-facing envelope verification: prover/verify CLIs and a std-only
+  HTTP attester service (`POST /verify`, `GET /healthz`). No new
+  dependencies; protocol code untouched.
+- `fabric/chaincode/` — Go anchor chaincode (statement registry, hash-bound
+  proof records, attester-MSP-gated verdicts) plus `fabric/e2e.sh`, the
+  bring-up smoke script for the Fabric host. See
+  [`docs/fabric-integration.md`](docs/fabric-integration.md).
 - `examples/` — `v3_benchmark` (set-size sweep), `v3_profile` (prover
   cost breakdown).
 - `docs/` — protocol spec, Fiat–Shamir/interactive-soundness analyses,
@@ -84,6 +99,7 @@ methodology: [`benchmark.md`](benchmark.md).
 Correct thesis-level description: *"an experimental implementation of a
 combined range-and-membership MPC-in-the-head proof artifact, with
 demonstrated honest-path behavior and listed tamper rejection, whose
-cryptographic analysis remains open."* There is no Hyperledger Fabric
-integration in this repository, and none of the figures above describe
-on-ledger performance.
+cryptographic analysis remains open."* A Hyperledger connection kit
+(chaincode, attester service, CLIs, bring-up runbook) is implemented, but
+no live Fabric network has been exercised from this machine — and none of
+the figures above describe on-ledger performance.

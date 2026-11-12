@@ -124,8 +124,8 @@ The committed harness is [`examples/v3_benchmark.rs`](examples/v3_benchmark.rs).
 It prints the parameter set and one CSV row per scenario. The prover RNG is
 seeded deterministically per set size. Timings are single samples with no
 warm-up or statistical variance analysis; rerun the command to assess local
-variation. Full test suite at this commit: `105 lib + 4 A1 + 2 A2 + 4 A3
-+ 1 A4 + 13 envelope + 2 p11 + 9 prototype = 140` pass.
+variation. Full test suite at this commit: `112 lib + 4 A1 + 2 A2 + 4 A3
++ 1 A4 + 13 envelope + 3 attester + 2 p11 + 9 prototype = 150` pass.
 
 ## Environment for the recorded runs
 
